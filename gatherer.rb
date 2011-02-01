@@ -1,11 +1,9 @@
 #!/usr/bin/ruby1.8 -w
 # gatherer.rb version 2.23 - Gathers information about various sytem files and then  checks them against mysql tables
 #
-# added update class to Usb, make it a singleton, and a subclass of device. the update method is just a tweak of the network update class.
-# Since I don't have mac's I have to "gather" first and match against mb_id and kind_id. If the motherboard has more than one kind of device, i'm done.
-#
-#Tweak for uconvert, should check for nil arguments and immedately return nil if it gets it, since I might not always find what I'm looking for (eg disk size, etc..)
-#That being said I drop records that don't have the data I'm looking for.
+# modified the System.get_loc_id to check for consoles
+# modified the Motherboard.get_mb_id to check against disk serial if UUID is nil
+# modified the Motherboard.update method to check for null UUID
 #
 # TODO can't detect usrp2 this way. 
 
@@ -549,10 +547,16 @@ class Motherboard < Component
 	end
 
 	def get_mb_id()
-		#UUID's should be unique, so I can identify the motherboard with UUID
+		#I should be able to match against UUID, but assimeing that is empty, I'll try to match against disk serial number
 		#It is the job of the mother board class to get the uuid.
 		#Since this value is probably used multiple times, I should store it, and only query once
-		@mb_id = sql_query("motherboards",["id"],Hash["mfr_sn" => @uuid]).first unless @mb_id
+		if @uuid
+			@mb_id = sql_query("motherboards",["id"],Hash["mfr_sn" => @uuid]).first unless @mb_id
+		else
+			@mb_id = sql_query("motherboards",["id"],Hash["hd_sn" => @disk.first['serial']]).first unless @mb_id
+			$log.warn("Motherboard.get_mb_id: No UUID was found, matching agasint first Disk serial")
+		end
+
 		unless @mb_id
 			$log.debug("Motherboard.get_mb_id: Sql query was empty, updating")
 			update(System.instance.get_inv_id())
@@ -585,8 +589,14 @@ class Motherboard < Component
 		else
 			#gathered data, contains floats so checking, uses string and float comparison 
 			check = sql_data.last(sql_data.length-2).zip(gat_data.last(gat_data.length-1)).map{|arr| arr[0] == arr[1]}.inject{|agg,n| agg and n}
-			#do the update, have to convert floats to_s before passing them to sql
-			return sql_update("motherboards",Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "mfr_sn"},Hash["mfr_sn"=>gat_data[1]]) unless check
+			#do the update, have to convert floats to_s before passing them to sql, if uuid is empty try disk serial
+			#TODO this still updates if the UUID is empty. A rare case, but we should fix it if we have time. 
+			if gat_data[1]
+				return sql_update("motherboards",Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "mfr_sn"},Hash["mfr_sn"=>gat_data[1]]) unless check
+			else 
+				$log.warn("Motherboard.update: No UUID was found, matching agasint first Disk serial")
+				return sql_update("motherboards",Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "hd_sn"},Hash["hd_sn"=>gat_data[5]]) unless check
+			end
 		end
 		$log.debug("Motherboard.update: Motherboard Checks passed, no Motherboard updates required")
 		
