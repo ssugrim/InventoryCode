@@ -401,13 +401,18 @@ class System < Component
 			end
 			
 			#get the cooridnates from the nodename
-			cords = /node(\d)-(\d)/.match(fqdn[0])[1,2]
+			if /console/.match(fqdn[0])
+				cords = ["0","10"]
+			else
+				cords = /node(\d)-(\d)/.match(fqdn[0])[1,2]
+			end
+
 			#testbed id from the domain
 			testbed_id = sql_query("testbeds",["id"],Hash["node_domain"=>fqdn[1]]).flatten.first
 			#store the location id	
 				
 			#if there were no cooridnates to be found I'll return 
-			return nil unless coords
+			return nil unless cords
 
 
 			@loc_id = sql_query("locations",["id"],Hash["x"=>cords[0],"y"=>cords[1],"testbed_id"=>testbed_id]).flatten.first
