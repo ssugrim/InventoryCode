@@ -552,25 +552,41 @@ class Motherboard < Component
 		#Since this value is probably used multiple times, I should store it, and only query once
 		if @uuid
 			@mb_id = sql_query("motherboards",["id"],Hash["mfr_sn" => @uuid]).first unless @mb_id
+			unless @mb_id
+				$log.debug("Motherboard.get_mb_id: Sql query was empty, updating")
+				update(System.instance.get_inv_id())
+				@mb_id = sql_query("motherboards",["id"],Hash["mfr_sn" => @uuid]).first
+			end
 		else
 			@mb_id = sql_query("motherboards",["id"],Hash["hd_sn" => @disk.first['serial']]).first unless @mb_id
 			$log.warn("Motherboard.get_mb_id: No UUID was found, matching agasint first Disk serial")
+			unless @mb_id
+				$log.debug("Motherboard.get_mb_id: sql_query was empty, updateing")
+				update(System.instance.get_inv_id())
+				@mb_id = sql_query("motherboards",["id"],Hash["hd_sn" => @disk.first['serial']]).first
+			end
 		end
 
-		unless @mb_id
-			$log.debug("Motherboard.get_mb_id: Sql query was empty, updating")
-			update(System.instance.get_inv_id())
-			@mb_id = sql_query("motherboards",["id"],Hash["mfr_sn" => @uuid]).first 
-		end
 		return @mb_id
 	end
 
 	def update(inv_id)
 		#updates the motherboard record and the node record
-		headers = ["id","inventory_id","mfr_sn","cpu_type","cpu_n","cpu_hz","hd_sn","hd_size","memory"]
 
 		#the data
-		sql_data = sql_query("motherboards",headers,Hash["mfr_sn"=>@uuid])
+		headers = ["id","inventory_id","mfr_sn","cpu_type","cpu_n","cpu_hz","hd_sn","hd_size","memory"]
+		if @uuid
+			#check against serial 
+			sql_data = sql_query("motherboards",headers,Hash["mfr_sn"=>@uuid])
+			gat_data = [inv_id,@uuid,@cpu_vend + @cpu_prod,@cpu_num,@cpu_freq,@disk.first["serial"],@disk.first["size"],@memory]
+		else
+			#check against disk
+			$log.warn("Motherboard.update: No UUID was found, matching agasint first Disk serial")
+			sql_data = sql_query("motherboards",headers,Hash["hd_sn" => @disk.first['serial']])
+			sql_data[2]=nil
+			gat_data = [inv_id,nil,@cpu_vend + @cpu_prod,@cpu_num,@cpu_freq,@disk.first["serial"],@disk.first["size"],@memory]
+		end
+
 		# convert the numeric strings to floats
 		unless sql_data.empty?
 			#cpu_hz, may be empty
@@ -580,23 +596,16 @@ class Motherboard < Component
 			#memory
 			sql_data[8] = Float(sql_data[8]) if sql_data[8]
 		end
-		gat_data = [inv_id,@uuid,@cpu_vend + @cpu_prod,@cpu_num,@cpu_freq,@disk.first["serial"],@disk.first["size"],@memory]
 
 		# if the query was empty, insert immedately, other wise check	
 		if sql_data.empty?
 			#do the insert, have to convert floats to_s before passing them to sql
 			return sql_insert("motherboards",Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})])
 		else
-			#gathered data, contains floats so checking, uses string and float comparison 
+			#gathered data, contains floats so checking, uses string and float comparison
 			check = sql_data.last(sql_data.length-2).zip(gat_data.last(gat_data.length-1)).map{|arr| arr[0] == arr[1]}.inject{|agg,n| agg and n}
 			#do the update, have to convert floats to_s before passing them to sql, if uuid is empty try disk serial
-			#TODO this still updates if the UUID is empty. A rare case, but we should fix it if we have time. 
-			if gat_data[1]
-				return sql_update("motherboards",Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "mfr_sn"},Hash["mfr_sn"=>gat_data[1]]) unless check
-			else 
-				$log.warn("Motherboard.update: No UUID was found, matching agasint first Disk serial")
-				return sql_update("motherboards",Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "hd_sn"},Hash["hd_sn"=>gat_data[5]]) unless check
-			end
+			return sql_update("motherboards",Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "mfr_sn"},Hash["mfr_sn"=>gat_data[1]]) unless check
 		end
 		$log.debug("Motherboard.update: Motherboard Checks passed, no Motherboard updates required")
 		
