@@ -1,11 +1,10 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.23 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 2.24 - Gathers information about various sytem files and then  checks them against mysql tables
 #
-# modified the System.get_loc_id to check for consoles
-# modified the Motherboard.get_mb_id to check against disk serial if UUID is nil
-# modified the Motherboard.update method to check for null UUID
+#Bunch of Minor Tweaks, and corrections on tool tips
 #
 # TODO can't detect usrp2 this way. 
+# TODO might have to redo @UUID to fake a serial based on location
 
 
 require 'optparse'
@@ -22,24 +21,24 @@ require 'singleton'
 $options = Hash.new()
 $optparse = OptionParser.new do |opts|
 	#Banner
-	opts.banner = "Collects infromation about the systems and wraps it up in a file: Gathrer.rb [options]"
+	opts.banner = "Collects infromation about the systems and updates The SQL database: Gathrer.rb [options]"
 
 	#debug check
 	$options[:debug] = false
-	opts.on('-d','--debug','Enable Debug messages') do
+	opts.on('-d','--debug','Enable Debug messages (default: false)') do
 		$options[:debug] = true
 	end
 
 	#XML check
 	$options[:xml] = false
-	opts.on('-x','--xml','Generate XML output, instead of flat text') do
+	opts.on('-x','--xml','Generate XML output, instead of flat text (FUTURE)') do
 		$options[:xml] = true
 	end
 
 	#TODO Make this a mandatory argument. 
 	#File Name check
 	$options[:outfile] = '/tmp/data'
-	opts.on('-o','--output FILE','Where to place the output file') do |file|
+	opts.on('-o','--output FILE','Where to place the output file (FUTURE)') do |file|
 		$options[:outfile] = file
 	end
 
@@ -63,31 +62,25 @@ $optparse = OptionParser.new do |opts|
 	
 	#Mysql Server location
 	$options[:server] = 'internal1.orbit-lab.org'
-	opts.on('-s','--server SERVER','Name of the SQL server') do |server|
+	opts.on('-s','--server SERVER','Name of the SQL server (default: internal1.orbit-lab.org)') do |server|
 		$options[:server] = server
 	end
 
 	#Mysql Server username 
 	$options[:user] = 'orbit'
-	opts.on('-u','--user USER','Sql Server Username') do |user|
+	opts.on('-u','--user USER','Sql Server Username (default: orbit)') do |user|
 		$options[:user] = user
 	end
 
 	#Mysql Server password
 	$options[:pass] = 'orbit'
-	opts.on('-p','--pass PASSWORD','Sql Server Password') do |pass|
+	opts.on('-p','--pass PASSWORD','Sql Server Password (default: orbit)') do |pass|
 		$options[:pass] = pass
 	end
 	
 	#Mysql database name
 	$options[:db] = 'inventory2'
-	opts.on('-D','--database DATABASE','Sql Server database') do |db|
-		$options[:db] = db
-	end
-
-	#Path to the sys file system
-	$options[:syspath] = '/sys/devices/pci0000:00'
-	opts.on('-S','--syspath PATH','Path to pci section sys file system') do |db|
+	opts.on('-D','--database DATABASE','Sql Server database (default: inventory2)') do |db|
 		$options[:db] = db
 	end
 
