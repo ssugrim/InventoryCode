@@ -1,7 +1,8 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.24 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 2.25 - Gathers information about various sytem files and then  checks them against mysql tables
 #
-#Bunch of Minor Tweaks, and corrections on tool tips
+#Modifiy some of the checks to be less stern, specfically cpu size, and bios information
+#FIxed some Motherboard.update bugs
 #
 # TODO can't detect usrp2 this way. 
 # TODO might have to redo @UUID to fake a serial based on location
@@ -187,7 +188,7 @@ class Component
 			tmp = keys.first(keys.length-1).map{|key| %&#{key}='#{where.fetch(key)}' AND &}.to_s +  %&#{keys.last}='#{where.fetch(keys.last)}'&
 			qs << " WHERE " + tmp
 		end
-		$log.debug("Component.sql_query: Querying with query String #{qs}")
+		$log.debug("Component.sql_query: Querying with query String: #{qs}")
 		#do the query and trap any mysql errors
 		begin
 			res = @@ms.query(qs) 
@@ -489,27 +490,42 @@ class Motherboard < Component
 		#the system name is simple the first line of the lshw -c system output
 		@name = arr.first.strip
 
-		#go line by line and look for the fields of intrest
 		#use a two line clode block to grab the captures
+		#TODO rewrite this with a flatten.select{}.match, should be less operations
 		@uuid = arr.map{|line| md = /uuid=(.*)/.match(line); if md then md.captures.first else nil end}.flatten.compact.first
 
 		#getting a folded array
 		big_arr = lshw_arr('memory',"*-")
 
 		#since it's folded, I'll have to select twice to find the string I'm intrested in
-		@bios = big_arr.select{|arr| arr[0] =~ /\*-firmware/}.flatten.select{|line| line =~ /vendor:/}.to_s.split(":",2)[1].strip
+	
+		#bark about missing bios info, but continue
+		bios_arr = big_arr.select{|arr| arr[0] =~ /\*-firmware/}.flatten.compact
+		$log.warn("Motherboard.initalize: Couldn't find bios information, continuing any way") if bios_arr.empty?
+		@bios=nil
+		@bios = bios_arr.select{|line| line =~ /vendor:/}.to_s.split(":",2)[1].strip unless bios_arr.empty?
+
 		@memory = uconvert(big_arr.select{|arr| arr[0] =~ /\*-memory/}.flatten.select{|line| line =~ /size:/}.to_s.split(":",2)[1].strip)
 
 		big_arr = lshw_arr('cpu',"*-")
 		#pick array elements that have a size, the size less are just logical, the index call will be nil unless size: is in the array, thus the select will only pick
 		#arrays with the size: in one of the elements
-		@cpu = big_arr.select{|arr| arr.index{|x| /size:/.match(x)}}
-		@cpu_num = @cpu.length.to_s
+		
+		#lshw multiply enumerates cpus serveral times, selecting only entries with bus info should give us an "accurate" core count
+		cpu = big_arr.select{|arr| arr.index{|x| /bus info:/.match(x)}}
+		@cpu_num = cpu.length.to_s
+
+		#Now, pick out the size string, lshw does not consistly assign size to processor number, so I sort the size array, and take the largest (last)
+		cpu_freq_arr = cpu.flatten.select{|line| line =~ /size:/}.sort
+		$log.warn("No cpu frequency information, continuing any way") if cpu_freq_arr.empty?
+
 		#do a unit conversion on this to make it a float (string), the first array should have all the required fields
-		#lshw does not consistly assign size to processor number, so I sort the size array, and take the largest (last)
-		@cpu_freq = uconvert(@cpu.flatten.select{|line| line =~ /size:/}.sort.last.to_s.split(":",2)[1].strip)
-		@cpu_prod = @cpu.first.select{|line| line =~ /product:/}.to_s.split(":",2)[1].strip
-		@cpu_vend = @cpu.first.select{|line| line =~ /vendor:/}.to_s.split(":",2)[1].strip
+		@cpu_freq=nil
+		@cpu_freq = uconvert(cpu_freq_arr.last.to_s.split(":",2)[1].strip) unless cpu_freq_arr.empty?
+		
+		#product and vendor names should always exist
+		@cpu_prod = cpu.first.select{|line| line =~ /product:/}.to_s.split(":",2)[1].strip
+		@cpu_vend = cpu.first.select{|line| line =~ /vendor:/}.to_s.split(":",2)[1].strip
 
 	        big_arr = lshw_arr('disk',"*-")
 
@@ -583,22 +599,38 @@ class Motherboard < Component
 		# convert the numeric strings to floats
 		unless sql_data.empty?
 			#cpu_hz, may be empty
-			sql_data[5] = Float(sql_data[5]) if sql_data[5]
+			if sql_data[5] 
+				sql_data[5] = Float(sql_data[5])
+				sql_data[5] = nil if sql_data[5] == 0.0
+			else 
+				sql_data[5] = nil
+			end
 			#hd_size
 			sql_data[7] = Float(sql_data[7]) if sql_data[7]
 			#memory
 			sql_data[8] = Float(sql_data[8]) if sql_data[8]
 		end
 
-		# if the query was empty, insert immedately, other wise check	
-		if sql_data.empty?
+		# if the query was empty (after throwing away some nils that were inserted), insert immedately, other wise check	
+		if sql_data.compact.empty?
 			#do the insert, have to convert floats to_s before passing them to sql
 			return sql_insert("motherboards",Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})])
 		else
-			#gathered data, contains floats so checking, uses string and float comparison
+			# data contains floats so checking, uses string or float comparison, the == will changed based on context
 			check = sql_data.last(sql_data.length-2).zip(gat_data.last(gat_data.length-1)).map{|arr| arr[0] == arr[1]}.inject{|agg,n| agg and n}
-			#do the update, have to convert floats to_s before passing them to sql, if uuid is empty try disk serial
-			return sql_update("motherboards",Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "mfr_sn"},Hash["mfr_sn"=>gat_data[1]]) unless check
+			
+			# update based on uuid or disk serial if uuid not avaialabe
+			unless check
+				if @uuid
+					vals = Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "mfr_sn"}
+			        	where =	Hash["mfr_sn"=>gat_data[1]]
+				else
+					vals = Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "hd_sn"}
+					where = Hash["hd_sn"=>gat_data[5]]
+				end
+				$log.debug("Motherboard.update: Motherboard Checks failed")
+				return sql_update("motherboards",vals,where)
+			end
 		end
 		$log.debug("Motherboard.update: Motherboard Checks passed, no Motherboard updates required")
 		
