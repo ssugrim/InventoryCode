@@ -1,10 +1,11 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.26 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 2.27 - Gathers information about various sytem files and then  checks them against mysql tables
 #
 #Modified the Network device list to only warn if I have bus but not Mac
 #
 #TODO can't detect usrp2 this way. 
 #TODO might have to redo @UUID to fake a serial based on location
+#TODO my update checks currently trash information if, I can't retreieve it. Should this do something more subtle?
 
 require 'optparse'
 require 'logger'
@@ -207,8 +208,11 @@ class Component
 
 		#will always return an arry, but this array might be empty, flatten it because the results of the row loop always produces arrays of arrays
 		#I use first to disambiguate multi mapped results, we should always query unique things, but In case we don't the return type should always be
-		#be consistent and arry of values, never an array of arrays
-		LOG.debug("Component.sql_query: Too many results, returning only the first") if res_arr.length > 1
+		#be consistent and arry of values (possibly empty), never an array of arrays
+		LOG.debug("Component.sql_query: Query returned zero results, returning empty array") if res_arr.length < 1
+		return Array.new() if res_arr.length < 1
+
+		LOG.debug("Component.sql_query: Query returned too many results, returning only the first. The sql table probably has errenous entries.") if res_arr.length > 1
 		return res_arr.first.flatten
 	end
 
