@@ -1,12 +1,10 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.25 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 2.26 - Gathers information about various sytem files and then  checks them against mysql tables
 #
-#Modifiy some of the checks to be less stern, specfically cpu size, and bios information
-#FIxed some Motherboard.update bugs
+#Modified the Network device list to only warn if I have bus but not Mac
 #
-# TODO can't detect usrp2 this way. 
-# TODO might have to redo @UUID to fake a serial based on location
-
+#TODO can't detect usrp2 this way. 
+#TODO might have to redo @UUID to fake a serial based on location
 
 require 'optparse'
 require 'logger'
@@ -96,8 +94,8 @@ $optparse.parse!
 
 #Log Initalise
 #TODO wrap this in a singleton
-$log = Logger.new($options[:logfile], 'weekly')
-if $options[:debug] then $log.level = Logger::DEBUG else $log.level = Logger::INFO end
+LOG = Logger.new($options[:logfile], 'weekly')
+if $options[:debug] then LOG.level = Logger::DEBUG else LOG.level = Logger::INFO end
 
 #Component parent class
 #Not ment to be instantiated
@@ -127,15 +125,15 @@ class Component
 	#marker - what character sequence to fold on - (optional)
 	#Returns an Array of lines from lshw output, if a marker is specfied the array is folded at the markers (markers discarded)
 		begin
-			$log.debug("Component.lshw_arr: Calling lshw with flag #{flag}#{" and marker " if marker}#{marker}")
+			LOG.debug("Component.lshw_arr: Calling lshw with flag #{flag}#{" and marker " if marker}#{marker}")
 			stdin, stdout, stderr = Open3.popen3("#{@@lshw} -numeric -c #{flag}")
 			errarr = stderr.readlines
-			$log.debug("Component.lshw_arr: Error output of call to lshw:: #{errarr}") unless errarr.empty?
+			LOG.debug("Component.lshw_arr: Error output of call to lshw:: #{errarr}") unless errarr.empty?
 			errarr.each do |line|
 				raise "lshw not found" if /No such file or directory/.match(line)
 			end
 		rescue Exception => e
-			$log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+			LOG.fatal("Component.lshw_arr: #{e.class} #{e.message}")
 			raise
 		end
 		lines = stdout.readlines
@@ -149,27 +147,27 @@ class Component
 		#standard: marker Data marker data marker data ...
 		headers = lines.select{|line| line =~ /#{Regexp.escape(marker)}/}.reverse
 		big_arr = headers.map{|mark| lines.slice!(lines.rindex(mark)..lines.rindex(lines.last))}.compact
-		$log.debug("Component.lshw_arr: Folded @ #{big_arr.length} marks")
+		LOG.debug("Component.lshw_arr: Folded @ #{big_arr.length} marks")
 		return big_arr.reverse
 	end
 	
 	def lsusb_arr()
 	#Returns an Array of lines from lsusb output
 		begin
-			$log.debug("Component.lsusb_arr: Calling lsusb")
+			LOG.debug("Component.lsusb_arr: Calling lsusb")
 			stdin, stdout, stderr = Open3.popen3("#{@@lsusb}")
 			errarr = stderr.readlines
-			$log.debug("Component.lsusb_arr: Error output of call to lsusb:: #{errarr}") unless errarr.empty?
+			LOG.debug("Component.lsusb_arr: Error output of call to lsusb:: #{errarr}") unless errarr.empty?
 			errarr.each do |line|
 				raise "lsusb not found" if /No such file or directory/.match(line)
 			end
 		rescue Exception => e
-			$log.fatal("Component.lsusb_arr: #{e.class} #{e.message}")
+			LOG.fatal("Component.lsusb_arr: #{e.class} #{e.message}")
 			raise
 		end
 		lines = stdout.readlines
 		lines.map!{|line| line.strip}
-		$log.debug("Component.lsusb_arr: Returning #{lines.length} lines")
+		LOG.debug("Component.lsusb_arr: Returning #{lines.length} lines")
 		return lines 
 	end
 
@@ -188,7 +186,7 @@ class Component
 			tmp = keys.first(keys.length-1).map{|key| %&#{key}='#{where.fetch(key)}' AND &}.to_s +  %&#{keys.last}='#{where.fetch(keys.last)}'&
 			qs << " WHERE " + tmp
 		end
-		$log.debug("Component.sql_query: Querying with query String: #{qs}")
+		LOG.debug("Component.sql_query: Querying with query String: #{qs}")
 		#do the query and trap any mysql errors
 		begin
 			res = @@ms.query(qs) 
@@ -196,18 +194,22 @@ class Component
 			#return an arrary 
 			res_arr = Array.new()
 			while row = res.fetch_row do
-				$log.debug("Component.sql_query: Query result was #{row}, a #{row.class}")
+				LOG.debug("Component.sql_query: Query result was #{row}, a #{row.class}")
 				res_arr.push(row)
 			end
-			$log.debug("Component.sql_query: Query results captured #{res_arr.length}")
+			LOG.debug("Component.sql_query: Query results captured #{res_arr.length}")
+				
 		rescue Mysql::Error => e
-			$log.error("Component.sql_query: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
-			$log.fatal("Component.sql_query: query died, called by #{caller[0]}")
+			LOG.error("Component.sql_query: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
+			LOG.fatal("Component.sql_query: query died, called by #{caller[0]}")
 			raise
 		end
 
 		#will always return an arry, but this array might be empty, flatten it because the results of the row loop always produces arrays of arrays
-		return res_arr.flatten
+		#I use first to disambiguate multi mapped results, we should always query unique things, but In case we don't the return type should always be
+		#be consistent and arry of values, never an array of arrays
+		LOG.debug("Component.sql_query: Too many results, returning only the first") if res_arr.length > 1
+		return res_arr.first.flatten
 	end
 
 	def sql_now()
@@ -217,13 +219,13 @@ class Component
 		
 			res_arr = Array.new()
 			while row = res.fetch_row do
-				$log.debug("Component.sql_now: Query result was #{row}, a #{row.class}")
+				LOG.debug("Component.sql_now: Query result was #{row}, a #{row.class}")
 				res_arr.push(row)
 			end
-			$log.debug("Component.sql_now: Query results captured #{res_arr.length}")
+			LOG.debug("Component.sql_now: Query results captured #{res_arr.length}")
 		rescue Mysql::Error => e
-			$log.error("Component.sql_now: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
-			$log.fatal("Component.sql_now: query died, called by #{caller[0]}")
+			LOG.error("Component.sql_now: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
+			LOG.fatal("Component.sql_now: query died, called by #{caller[0]}")
 			raise
 		end
 		
@@ -243,16 +245,16 @@ class Component
 		#but the order of values is not determined
 		qs = "INSERT INTO #{table} (" + vals.keys.map{|str| "\`" + str + "\`"}.join(",") + ") VALUES (" + vals.keys.map{|str| "\'" + vals.fetch(str) + "\'"}.join(",") +")"
 
-		$log.debug("Component.sql_insert: Insert Query String:#{qs}")
+		LOG.debug("Component.sql_insert: Insert Query String:#{qs}")
 		begin
 			@@ms.query(qs)
 		rescue Mysql::Error => e
-			$log.error("sql_insert: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
-			$log.fatal("sql_insert: Mquery died, called by #{caller[0]}")
+			LOG.error("sql_insert: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
+			LOG.fatal("sql_insert: Mquery died, called by #{caller[0]}")
 			raise
 		end
 		rows = @@ms.affected_rows
-		$log.debug("Component.sql_insert: rows changed #{rows}")
+		LOG.debug("Component.sql_insert: rows changed #{rows}")
 		rows = 0 unless rows
 		return rows
 	end
@@ -272,16 +274,16 @@ class Component
 		#use the keys from the where hash to make the where clause
 		qs << where.keys.first(where.keys.length-1).map{|key| %&#{key}='#{where.fetch(key)}' AND &}.to_s +  %&#{where.keys.last}='#{where.fetch(where.keys.last)}'&
 
-		$log.debug("Component.sql_update: Update Query String:#{qs}")
+		LOG.debug("Component.sql_update: Update Query String:#{qs}")
 		begin
 			@@ms.query(qs)
 		rescue Mysql::Error => e
-			$log.error("sql_update: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
-			$log.fatal("sql_update: Mquery died, called by #{caller[0]}")
+			LOG.error("sql_update: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
+			LOG.fatal("sql_update: Mquery died, called by #{caller[0]}")
 			raise
 		end
 		rows = @@ms.affected_rows
-		$log.debug("Component.sql_update: rows changed #{rows}")
+		LOG.debug("Component.sql_update: rows changed #{rows}")
 		rows = 0 unless rows
 		return rows
 	end
@@ -301,18 +303,18 @@ class Component
 			else
 				#return true if sucessfull connection
 				@@ms = Mysql.real_connect(@@server, @@user, @@pass, @@db)
-				$log.debug("component.connect: Sucessful Connection to MySql #{@@server}")
+				LOG.debug("component.connect: Sucessful Connection to MySql #{@@server}")
 				return true
 			end
 		rescue Mysql::Error => e
-			$log.error("component.connect: Mysql code: #{e.errno}, Mysql Error message: #{e.error}")
+			LOG.error("component.connect: Mysql code: #{e.errno}, Mysql Error message: #{e.error}")
 
 			#take a little nap before trying again
 			sleep(rand(20))
 			retry if try < 3
 
 			#I got here because it failed too many times
-			$log.fatal("component.connect: Giving up for good this time : #{e.errno} : #{e.error}")
+			LOG.fatal("component.connect: Giving up for good this time : #{e.errno} : #{e.error}")
 			raise
 		end
 	end
@@ -320,18 +322,18 @@ class Component
 	def Component.disconnect(ms=@@ms)
 		if ms
 			#try to close the connection
-			$log.debug("component.disconnect: Closing the mysql connection #{ms}")
+			LOG.debug("component.disconnect: Closing the mysql connection #{ms}")
 			ms.close
 			return true
 		else 
 			#complain if I it didn't exist
-			$log.fatal("component.disconnect: Mysql object is nil, can't disconnect")
+			LOG.fatal("component.disconnect: Mysql object is nil, can't disconnect")
 		end
 	end
 
 	def update()
 		#abstract method, every one should override this. 
-		$log.fatal("component.update: #{caller} did not implement check")
+		LOG.fatal("component.update: #{caller} did not implement check")
 		raise NotImplementedError
 	end
 	
@@ -341,7 +343,7 @@ class Component
 		#check for a nil argument, I should return nil immedately if I get nil
 		return nil unless num
 
-		$log.debug("Component.uconvert: converting #{num} to float")
+		LOG.debug("Component.uconvert: converting #{num} to float")
 		value = /(\d+)(\w).*/.match(num).to_a
 		return (Float(value[1]) * 1000000) if value[2].upcase == "M"
 		return (Float(value[1]) * 1000000000) if value[2].upcase == "G"
@@ -362,7 +364,7 @@ class Device < Component
 		#check for device_kind, insert one if needed
 		kind = sql_query("device_kinds",["id"],Hash["vendor"=>vendor,"device"=>device])
 		if kind.empty?
-			$log.debug{"Device.get_device_kind: Kind not found, inserting"}
+			LOG.debug{"Device.get_device_kind: Kind not found, inserting"}
 			sql_insert("device_kinds",Hash["vendor"=>vendor.to_s,"device"=>device.to_s,"bus"=>bus.to_s,"inventory_id"=>inv_id.to_s,"description"=>desc.to_s])
 			kind = sql_query("device_kinds",["id"],Hash["vendor"=>vendor,"device"=>device])
 		end
@@ -388,7 +390,7 @@ class System < Component
 				#all external calls should be wrapped in a begin block
 				fqdn = `hostname --fqdn`.split(".",3)
 			rescue Exception => e
-				$log.fatal("System.get_loc_id: #{e.class} #{e.message}")
+				LOG.fatal("System.get_loc_id: #{e.class} #{e.message}")
 				raise
 			end
 			
@@ -409,7 +411,7 @@ class System < Component
 
 			@loc_id = sql_query("locations",["id"],Hash["x"=>cords[0],"y"=>cords[1],"testbed_id"=>testbed_id]).flatten.first
 			unless @loc_id
-				$log.fatal("System.get_loc_id: Query for location Id failed, I can't continue")
+				LOG.fatal("System.get_loc_id: Query for location Id failed, I can't continue")
 				raise NoLocationIdError
 			end
 		end
@@ -441,12 +443,12 @@ class System < Component
 				while row = res.fetch_row do
 					tmp.push(row)
 				end
-				$log.debug("System.get_inv_id: #{tmp.length} rows collected")
+				LOG.debug("System.get_inv_id: #{tmp.length} rows collected")
 				@inventory_id = tmp.flatten.compact.first
 			end
 			return @inventory_id
 		rescue Exception => e
-			$log.fatal("System.get_inv_id: #{e.class} #{e.message}")
+			LOG.fatal("System.get_inv_id: #{e.class} #{e.message}")
 			raise
 		end
 	end
@@ -456,17 +458,17 @@ class System < Component
 		unless @node_id
 			@node_id,sql_mb_id = sql_query("nodes",["id","motherboard_id"],Hash["location_id"=>loc_id])
 			if @node_id == nil
-				$log.debug("System.get_node_id: Node id missing, inserting")
+				LOG.debug("System.get_node_id: Node id missing, inserting")
 				sql_insert("nodes",Hash["location_id"=>loc_id,"motherboard_id"=>mb_id])
 				@node_id = sql_query("nodes",["id"],Hash["location_id"=>loc_id])
 				return @node_id
 			end
 			if sql_mb_id == mb_id
-				$log.debug("System.get_node_id: Node id correct")
+				LOG.debug("System.get_node_id: Node id correct")
 				return @node_id
 			else
 				#location and nodes should have a 1-1 mapping, the only diffrence is if the mb_id is correct
-				$log.debug("System.get_node_id: motherboard info wrong, updating")
+				LOG.debug("System.get_node_id: motherboard info wrong, updating")
 				sql_update("nodes",Hash["motherboard_id"=>mb_id],Hash["location_id"=>loc_id])
 				return @node_id
 			end
@@ -501,7 +503,7 @@ class Motherboard < Component
 	
 		#bark about missing bios info, but continue
 		bios_arr = big_arr.select{|arr| arr[0] =~ /\*-firmware/}.flatten.compact
-		$log.warn("Motherboard.initalize: Couldn't find bios information, continuing any way") if bios_arr.empty?
+		LOG.warn("Motherboard.initalize: Couldn't find bios information, continuing any way") if bios_arr.empty?
 		@bios=nil
 		@bios = bios_arr.select{|line| line =~ /vendor:/}.to_s.split(":",2)[1].strip unless bios_arr.empty?
 
@@ -517,7 +519,7 @@ class Motherboard < Component
 
 		#Now, pick out the size string, lshw does not consistly assign size to processor number, so I sort the size array, and take the largest (last)
 		cpu_freq_arr = cpu.flatten.select{|line| line =~ /size:/}.sort
-		$log.warn("No cpu frequency information, continuing any way") if cpu_freq_arr.empty?
+		LOG.warn("No cpu frequency information, continuing any way") if cpu_freq_arr.empty?
 
 		#do a unit conversion on this to make it a float (string), the first array should have all the required fields
 		@cpu_freq=nil
@@ -544,7 +546,7 @@ class Motherboard < Component
 
 		#keep only elements with a size value
 		@disk = @disk.select{|hsh| hsh['size']}
-		$log.debug("Motherboard.initalize: number of disks found #{@disk.length}")
+		LOG.debug("Motherboard.initalize: number of disks found #{@disk.length}")
 		
 		#delcaring mb_id/loc_id for good measure
 		@mb_id = nil
@@ -562,15 +564,15 @@ class Motherboard < Component
 		if @uuid
 			@mb_id = sql_query("motherboards",["id"],Hash["mfr_sn" => @uuid]).first unless @mb_id
 			unless @mb_id
-				$log.debug("Motherboard.get_mb_id: Sql query was empty, updating")
+				LOG.debug("Motherboard.get_mb_id: Sql query was empty, updating")
 				update(System.instance.get_inv_id())
 				@mb_id = sql_query("motherboards",["id"],Hash["mfr_sn" => @uuid]).first
 			end
 		else
 			@mb_id = sql_query("motherboards",["id"],Hash["hd_sn" => @disk.first['serial']]).first unless @mb_id
-			$log.warn("Motherboard.get_mb_id: No UUID was found, matching agasint first Disk serial")
+			LOG.warn("Motherboard.get_mb_id: No UUID was found, matching agasint first Disk serial")
 			unless @mb_id
-				$log.debug("Motherboard.get_mb_id: sql_query was empty, updateing")
+				LOG.debug("Motherboard.get_mb_id: sql_query was empty, updateing")
 				update(System.instance.get_inv_id())
 				@mb_id = sql_query("motherboards",["id"],Hash["hd_sn" => @disk.first['serial']]).first
 			end
@@ -590,7 +592,7 @@ class Motherboard < Component
 			gat_data = [inv_id,@uuid,@cpu_vend + @cpu_prod,@cpu_num,@cpu_freq,@disk.first["serial"],@disk.first["size"],@memory]
 		else
 			#check against disk
-			$log.warn("Motherboard.update: No UUID was found, matching agasint first Disk serial")
+			LOG.warn("Motherboard.update: No UUID was found, matching agasint first Disk serial")
 			sql_data = sql_query("motherboards",headers,Hash["hd_sn" => @disk.first['serial']])
 			sql_data[2]=nil
 			gat_data = [inv_id,nil,@cpu_vend + @cpu_prod,@cpu_num,@cpu_freq,@disk.first["serial"],@disk.first["size"],@memory]
@@ -628,11 +630,11 @@ class Motherboard < Component
 					vals = Hash[headers.last(headers.length-1).zip(gat_data.map{|x| x.to_s})].reject{|k,v| k == "hd_sn"}
 					where = Hash["hd_sn"=>gat_data[5]]
 				end
-				$log.debug("Motherboard.update: Motherboard Checks failed")
+				LOG.debug("Motherboard.update: Motherboard Checks failed")
 				return sql_update("motherboards",vals,where)
 			end
 		end
-		$log.debug("Motherboard.update: Motherboard Checks passed, no Motherboard updates required")
+		LOG.debug("Motherboard.update: Motherboard Checks passed, no Motherboard updates required")
 		
 		#if there was nothing to update say zero lines changed.
 		return 0
@@ -661,7 +663,7 @@ class Network < Device
 			tmp_hsh["mac"] = arr.map{|line| line.split(":",2)[1].strip if /serial:/.match(line)}.flatten.compact.first
 			tmp_hsh['driver'] = arr.map{|line| /driver=(\w*)/.match(line).captures[0] if /driver=(\w*)/.match(line)}.flatten.compact.first
 
-			#more complicated scrapes, cast the MD to an array and pull the relevant array entries, we'll get the bus values due to the -numeric keyword:w
+			#more complicated scrapes, cast the MD to an array and pull the relevant array entries, we'll get the bus values due to the -numeric keyword
 			#
 			tmpmat = arr.map{|line| /vendor:(.*)\[(.*)\]/.match(line).to_a}.flatten
 			tmp_hsh["vendname"] = tmpmat[1].to_s if tmpmat[1]
@@ -671,16 +673,18 @@ class Network < Device
 			tmp_hsh["prod"] = tmpmat[3].hex if tmpmat[3]
 
 			#some warnings about the map! line below. It's easier to warn here than down there.
-			$log.warn("Network.initialize: missing mac for bus #{tmp_hsh["bus"]}, info will be droped. Is the driver loaded? ") unless tmp_hsh["mac"]
-			$log.warn("Network.initialize: missing bus for mac #{tmp_hsh["mac"]}, info will be droped.") unless tmp_hsh["bus"]
+			LOG.warn("Network.initialize: empty bus information, DATA WILL BE DROPPED ") unless tmp_hsh["bus"]
+			LOG.warn("Network.initialize: missing mac for bus #{tmp_hsh["bus"]}, Is the driver loaded? ") unless tmp_hsh["mac"]
+			LOG.warn("Network.initialize: missing prod identifiers for mac #{tmp_hsh["mac"]}, DATA WILL BE DROPPED.") unless tmp_hsh["prod"]
 
 			#can't use the return keyword because that is one context up, just invoking tmp_hsh tho will pass that value up to the map as the "result", the 
 			#block evaluates to the last statement
 			tmp_hsh
 		end
 		
-		#drop any array entries that don't have bus and mac infromation. I use map! and compact! since select! doesn't work
-		@interface.map!{|hsh| unless hsh['mac'] and hsh['bus']then nil else hsh end}.compact!
+		#drop any array entries that don't have product identifier infromation. I use map! and compact! since select! doesn't work
+		@interface.map!{|hsh| unless hsh['prod'] and hsh['bus'] then nil else hsh end}.compact!
+		LOG.debug("Interfaces: #{@interface.join("#\n")}")
 	end
 
 	def to_s()
@@ -697,14 +701,16 @@ class Network < Device
 		headers = ["id","inventory_id","device_kind_id","motherboard_id","address","mac","canonical_name"]
 
 		# the sql data array
-		sql_data = @interface.map{|hsh| sql_query("devices",headers,Hash["mac" => hsh['mac']])}
+		sql_data = @interface.map{|hsh| sql_query("devices",headers,Hash["address"=>hsh["bus"],"motherboard_id" => mb_id])}
 		
 		#join the kindnames if they exist
 		kindname=@interface.map{|hsh| Array[hsh["vendname"],hsh["prodname"],hsh["desc"]].compact.join(" ")}
 
 		#the collected data array, bus type is PCI because I'm a network scavenged device
 		gat_data = @interface.zip(kindname).map{|arr| [inv_id,get_device_kind(arr[0]["vend"],arr[0]["prod"],arr[1],"PCI",inv_id),mb_id,arr[0]['bus'],arr[0]['mac'],arr[0]['name']]}
-		
+		#set missing data to empty string so the inserts work
+		gat_data.map!{|arr| arr.map{|ele| ele or ""}}
+
 		#insert if sql_data is empty?	
 		insert = sql_data.zip(gat_data).map{|arr| if arr[0].empty? then sql_insert("devices",Hash[headers.last(headers.length-1).zip(arr[1])]) else 0 end}
 		
@@ -713,13 +719,15 @@ class Network < Device
 		unmatch = sql_data.zip(gat_data,gat_data).reject{|arr| arr[0].empty?}.map{|arr| Array[arr[0].last(arr[0].length-2),arr[1].last(arr[1].length-1),arr[2]]}
 		#compare the truncated arrays, and update if they don't match, drop all the nill entiries with a compact
 		uphsh = unmatch.map{|arr| Array[arr[0].eql?(arr[1]),arr[2]]}.map{|arr| if arr[0] then nil else Hash[headers.last(headers.length-1).zip(arr[1])] end}.compact
-		$log.debug("Network.update: #{uphsh.length} updates to be made")
+
+		LOG.debug("Network.update: #{uphsh.length} updates to be made")
+		LOG.debug("Update hsh: #{uphsh.join("\n#")}")
 		#push the update 
-		update = uphsh.map{|hsh| sql_update("devices",hsh.reject{|k,v| k == "mac"},Hash["mac"=>hsh["mac"]])}
+		update = uphsh.map{|hsh| sql_update("devices",hsh,Hash["address"=>hsh["address"],"motherboard_id" => mb_id])}
 
 		#report and return
 		changes = insert.inject{|sum,n| sum +n} + (update.inject{|sum,n| sum + n} or 0)
-		$log.debug("Network.update: #{insert.inject{|sum,n| sum +n}} inserts and #{(update.inject{|sum,n| sum + n} or 0)} updates made, total #{changes} changes made")
+		LOG.debug("Network.update: #{insert.inject{|sum,n| sum +n}} inserts and #{(update.inject{|sum,n| sum + n} or 0)} updates made, total #{changes} changes made")
 		return changes
 	end
 
@@ -747,7 +755,7 @@ class Usb < Device
 			tmp_hsh['name']= /....:....\s(.*)$/.match(line)[1] if /....:....\s(.*)$/.match(line)
 			tmp_hsh
 		end
-		$log.debug("Usb.initilize: #{@device.length} devices found")
+		LOG.debug("Usb.initilize: #{@device.length} devices found")
 	end
 
 	def to_s()
@@ -761,7 +769,7 @@ class Usb < Device
 		
 		#nothing to update if no usb devices found
 		if @device.empty?
-			$log.debug("Usb.update: Device list empty")
+			LOG.debug("Usb.update: Device list empty")
 			return 0
 		end
 
@@ -773,6 +781,7 @@ class Usb < Device
 		
 		# the sql data array, matched against device id and mb_id, there is a huge flaw here, since this query can be ambigous
 		# It must be assumed that onyl a single device of device_kind can be connected at a time to a node, multiple types will break
+		# TODO this should probably be based on address for uniformity.
 		sql_data = gat_data.map{|arr| sql_query("devices",headers,Hash["device_kind_id"=>arr[1],"motherboard_id"=>arr[2]])}
 		
 		#insert if sql_data is empty?	
@@ -783,13 +792,13 @@ class Usb < Device
 		unmatch = sql_data.zip(gat_data,gat_data).reject{|arr| arr[0].empty?}.map{|arr| Array[arr[0].last(arr[0].length-2),arr[1].last(arr[1].length-1),arr[2]]}
 		#compare the truncated arrays, and update if they don't match, drop all the nill entiries with a compact
 		uphsh = unmatch.map{|arr| Array[arr[0].eql?(arr[1]),arr[2]]}.map{|arr| if arr[0] then nil else Hash[headers.last(headers.length-1).zip(arr[1])] end}.compact
-		$log.debug("Usb.update: #{uphsh.length} updates to be made")
+		LOG.debug("Usb.update: #{uphsh.length} updates to be made")
 		#push the update, for some reason Hash.select returns an array, so I have to cast it as a hash 
 		update = uphsh.map{|hsh| sql_update("devices",hsh.reject{|k,v| k == "device_kind_id" or k == "motherboard_id"},Hash[hsh.select{|k,v| k == "device_kind_id" or k == "motherboard_id"}])}
 
 		#report and return
 		changes = insert.inject{|sum,n| sum +n} + (update.inject{|sum,n| sum + n} or 0)
-		$log.debug("Usb.update: #{insert.inject{|sum,n| sum +n}} inserts and #{(update.inject{|sum,n| sum + n} or 0)} updates made, total #{changes} changes made")
+		LOG.debug("Usb.update: #{insert.inject{|sum,n| sum +n}} inserts and #{(update.inject{|sum,n| sum + n} or 0)} updates made, total #{changes} changes made")
 		return changes
 	end
 end
@@ -797,11 +806,11 @@ end
 
 if __FILE__ == $0
 	#Says Hello
-	$log.info("Main: Begin Gatherer.rb - For more information check www.orbit-lab.org")
+	LOG.info("Main: Begin Gatherer.rb - For more information check www.orbit-lab.org")
 	begin
 		#Prime the connection
-		$log.info("Main: Connecting to Database #{$options[:server]}")
-		$log.info("Main: connection sucessfull") if Component.connect()
+		LOG.info("Main: Connecting to Database #{$options[:server]}")
+		LOG.info("Main: connection sucessfull") if Component.connect()
 		
 		#collect identifiers	
 		inv_id = System.instance.get_inv_id()
@@ -811,23 +820,23 @@ if __FILE__ == $0
 
 		
 		#display identifiers
-		$log.info("Main: Inventory ID is #{inv_id}")
-		$log.info("Main: Location ID is #{loc_id}")
-		$log.info("Main: Node ID is #{node_id}")
-		$log.info("Main: Mother board ID is #{mb_id}")
+		LOG.info("Main: Inventory ID is #{inv_id}")
+		LOG.info("Main: Location ID is #{loc_id}")
+		LOG.info("Main: Node ID is #{node_id}")
+		LOG.info("Main: Mother board ID is #{mb_id}")
 
 		#get the data and check it, report any problems
-		$log.info("Main: Mother board summary #{Motherboard.instance}")
-		$log.info("Main: Macs found: #{Network.instance}")
-		$log.info("Main: Usb Devices  found: #{Usb.instance}")
-		$log.info("Main: Motherboard #{Motherboard.instance.update(inv_id)} device rows changed")
-		$log.info("Main: Network #{Network.instance.update(inv_id,mb_id)} device rows changed")
-		$log.info("Main: Usb #{Usb.instance.update(inv_id,mb_id)} device rows changed")
-		$log.info("Main: checking in, #{System.instance.check_in(loc_id)} rows changed")
+		LOG.info("Main: Mother board summary #{Motherboard.instance}")
+		LOG.info("Main: Macs found: #{Network.instance}")
+		LOG.info("Main: Usb Devices  found: #{Usb.instance}")
+		LOG.info("Main: Motherboard #{Motherboard.instance.update(inv_id)} device rows changed")
+		LOG.info("Main: Network #{Network.instance.update(inv_id,mb_id)} device rows changed")
+		LOG.info("Main: Usb #{Usb.instance.update(inv_id,mb_id)} device rows changed")
+		LOG.info("Main: checking in, #{System.instance.check_in(loc_id)} rows changed")
 	ensure	
 		#Must close connection reguardless of results. 
-		$log.info("Main: disconnecting from Database #{$options[:server]}")
-		$log.info("Main: disconnection sucessfull") if Component.disconnect()
+		LOG.info("Main: disconnecting from Database #{$options[:server]}")
+		LOG.info("Main: disconnection sucessfull") if Component.disconnect()
 	end
-	$log.close
+	LOG.close
 end
