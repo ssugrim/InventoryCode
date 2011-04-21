@@ -1,7 +1,7 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.27 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 2.28 - Gathers information about various sytem files and then  checks them against mysql tables
 #
-#Modified the Network device list to only warn if I have bus but not Mac
+#Minor Fix to correct the hostname bug
 #
 #TODO can't detect usrp2 this way. 
 #TODO might have to redo @UUID to fake a serial based on location
@@ -402,7 +402,7 @@ class System < Component
 			if /console/.match(fqdn[0])
 				cords = ["0","10"]
 			else
-				cords = /node(\d)-(\d)/.match(fqdn[0])[1,2]
+				cords = /node(\d*)-(\d*)/.match(fqdn[0])[1,2]
 			end
 
 			#testbed id from the domain
