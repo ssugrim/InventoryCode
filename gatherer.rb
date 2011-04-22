@@ -1,7 +1,5 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.28 - Gathers information about various sytem files and then  checks them against mysql tables
-#
-#Minor Fix to correct the hostname bug
+# gatherer.rb version 2.29 - Gathers information about various sytem files and then  checks them against mysql tables
 #
 #TODO can't detect usrp2 this way. 
 #TODO might have to redo @UUID to fake a serial based on location
@@ -50,13 +48,13 @@ $optparse = OptionParser.new do |opts|
 	
 	#LSHW location
 	$options[:loclshw] = '/usr/bin/lshw'
-	opts.on('-L','--lshw FILE','Where to store the log file (default: /usr/bin/lshw)') do |file|
+	opts.on('-L','--lshw FILE','location of lshw executeable (default: /usr/bin/lshw)') do |file|
 		$options[:loclshw] = file
 	end
 	
 	#LSUSB location
-	$options[:loclsusb] = '/usr/bin/lsusb'
-	opts.on('-U','--lsusb FILE','Where to store the log file (default: /usr/bin/lsusb)') do |file|
+	$options[:loclsusb] = '/sbin/lsusb'
+	opts.on('-U','--lsusb FILE','location of lshsb executeable (default: /sbin/lsusb)') do |file|
 		$options[:loclsusb] = file
 	end
 	
@@ -82,6 +80,12 @@ $optparse = OptionParser.new do |opts|
 	$options[:db] = 'inventory2'
 	opts.on('-D','--database DATABASE','Sql Server database (default: inventory2)') do |db|
 		$options[:db] = db
+	end
+
+	#Mysql database name
+	$options[:lochost] = '/bin/hostname'
+	opts.on('-H','--hostname HOSTNAME','location of hostname executeable (default: /bin/hostname)') do |lochost|
+		$options[:lochost] = lochost
 	end
 
 	# This displays the help screen, all programs are
@@ -381,18 +385,20 @@ class System < Component
 	#contains system infromation stored in single instance variables: node id, location id, inventory id, and the check_in method
 	def initialize()
 		super()
+		@@hostname=$options[:lochost]
 		@loc_id = nil
 		@inventory_id = nil
 		@node_id = nil
 	end
 
 	def get_loc_id()
-		# I'll need to determine my domain by checking my hostanme, I expect that the fqdn is of the from nodeame.node_domain.orbit-lab.org
+		# I'll need to determine my domain by checking my hostanme, I expect that the fqdn is of the from nodename.node_domain.orbit-lab.org
 		unless @loc_id
 			#should only need to check once
 			begin
 				#all external calls should be wrapped in a begin block
-				fqdn = `hostname --fqdn`.split(".",3)
+				#get the host name and parse it for node id
+				fqdn = `#{@@hostname} --fqdn`.split(".").map{|x| x.strip}
 			rescue Exception => e
 				LOG.fatal("System.get_loc_id: #{e.class} #{e.message}")
 				raise
@@ -404,10 +410,14 @@ class System < Component
 			else
 				cords = /node(\d*)-(\d*)/.match(fqdn[0])[1,2]
 			end
+				
+			#drop the node name, create a recursive array with the concanated strings in it, then drop initial empty string
+			domtry = fqdn.drop(1).inject(Array.new()){|l,s| if l.empty? then l  = [s] else [l,l.last+"."+s] end}.flatten
+			LOG.debug("Possible Domains:#{domtry.map{|x| x +","}}")
 
-			#testbed id from the domain
-			testbed_id = sql_query("testbeds",["id"],Hash["node_domain"=>fqdn[1]]).flatten.first
-			#store the location id	
+			#try the possible domains until I get one that works
+			testbed_id = domtry.map{|fqdn| sql_query("testbeds",["id"],Hash["node_domain"=>fqdn])}.flatten.first
+			
 				
 			#if there were no cooridnates to be found I'll return 
 			return nil unless cords
