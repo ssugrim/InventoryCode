@@ -1,5 +1,5 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.29 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 2.30 - Gathers information about various sytem files and then  checks them against mysql tables
 #
 #TODO can't detect usrp2 this way. 
 #TODO might have to redo @UUID to fake a serial based on location
@@ -603,13 +603,15 @@ class Motherboard < Component
 		if @uuid
 			#check against serial 
 			sql_data = sql_query("motherboards",headers,Hash["mfr_sn"=>@uuid])
+			#gat should have 1 less element than sql since I don't know if an id exists ahead of time.
 			gat_data = [inv_id,@uuid,@cpu_vend + @cpu_prod,@cpu_num,@cpu_freq,@disk.first["serial"],@disk.first["size"],@memory]
 		else
 			#check against disk
 			LOG.warn("Motherboard.update: No UUID was found, matching agasint first Disk serial")
 			sql_data = sql_query("motherboards",headers,Hash["hd_sn" => @disk.first['serial']])
 			sql_data[2]=nil
-			gat_data = [inv_id,nil,@cpu_vend + @cpu_prod,@cpu_num,@cpu_freq,@disk.first["serial"],@disk.first["size"],@memory]
+			#gat should have 1 less element than sql since I don't know if an id exists ahead of time.
+			gat_data = [inv_id,"BOGUS MB #{@disk.first["serial"]}",@cpu_vend + @cpu_prod,@cpu_num,@cpu_freq,@disk.first["serial"],@disk.first["size"],@memory]
 		end
 
 		# convert the numeric strings to floats
