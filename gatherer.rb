@@ -412,11 +412,11 @@ class System < Component
 			end
 				
 			#drop the node name, create a recursive array with the concanated strings in it, then drop initial empty string
-			domtry = fqdn.drop(1).inject(Array.new()){|l,s| if l.empty? then l  = [s] else [l,l.last+"."+s] end}.flatten
-			LOG.debug("Possible Domains:#{domtry.map{|x| x +","}}")
+			domtry = fqdn.drop(1).inject(Array.new()){|l,s| if l.empty? then l.push(s) else l.push(l.last + "." + s) end}
+			LOG.debug("System.get_loc_id:Possible Domains #{domtry.map{|x| x +","}}")
 
 			#try the possible domains until I get one that works
-			testbed_id = domtry.map{|fqdn| sql_query("testbeds",["id"],Hash["node_domain"=>fqdn])}.flatten.first
+			testbed_id = domtry.map{|fqdn| sql_query("testbeds",["id"],Hash["node_domain"=>fqdn])}.flatten.compact.first
 			
 				
 			#if there were no cooridnates to be found I'll return 
