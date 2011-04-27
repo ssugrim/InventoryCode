@@ -2,7 +2,6 @@
 # gatherer.rb version 2.30 - Gathers information about various sytem files and then  checks them against mysql tables
 #
 #TODO can't detect usrp2 this way. 
-#TODO might have to redo @UUID to fake a serial based on location
 #TODO my update checks currently trash information if, I can't retreieve it. Should this do something more subtle?
 
 require 'optparse'
@@ -98,7 +97,6 @@ end
 $optparse.parse!
 
 #Log Initalise
-#TODO wrap this in a singleton
 LOG = Logger.new($options[:logfile], 'weekly')
 if $options[:debug] then LOG.level = Logger::DEBUG else LOG.level = Logger::INFO end
 
@@ -139,6 +137,7 @@ class Component
 			end
 		rescue Exception => e
 			LOG.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+			LOG.fatal("Component.lshw_arr: called by #{caller}")
 			raise
 		end
 		lines = stdout.readlines
@@ -168,6 +167,7 @@ class Component
 			end
 		rescue Exception => e
 			LOG.fatal("Component.lsusb_arr: #{e.class} #{e.message}")
+			LOG.fatal("Component.lsusb_arr: called by #{caller}")
 			raise
 		end
 		lines = stdout.readlines
@@ -206,7 +206,7 @@ class Component
 				
 		rescue Mysql::Error => e
 			LOG.error("Component.sql_query: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
-			LOG.fatal("Component.sql_query: query died, called by #{caller[0]}")
+			LOG.fatal("Component.sql_query: query died, called by #{caller}")
 			raise
 		end
 
@@ -233,7 +233,7 @@ class Component
 			LOG.debug("Component.sql_now: Query results captured #{res_arr.length}")
 		rescue Mysql::Error => e
 			LOG.error("Component.sql_now: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
-			LOG.fatal("Component.sql_now: query died, called by #{caller[0]}")
+			LOG.fatal("Component.sql_now: query died, called by #{caller}")
 			raise
 		end
 		
@@ -258,7 +258,7 @@ class Component
 			@@ms.query(qs)
 		rescue Mysql::Error => e
 			LOG.error("sql_insert: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
-			LOG.fatal("sql_insert: Mquery died, called by #{caller[0]}")
+			LOG.fatal("sql_insert: Mquery died, called by #{caller}")
 			raise
 		end
 		rows = @@ms.affected_rows
@@ -287,7 +287,7 @@ class Component
 			@@ms.query(qs)
 		rescue Mysql::Error => e
 			LOG.error("sql_update: Mysql code: #{e.errno},\n Mysql Error message: #{e.error}")
-			LOG.fatal("sql_update: Mquery died, called by #{caller[0]}")
+			LOG.fatal("sql_update: Mquery died, called by #{caller}")
 			raise
 		end
 		rows = @@ms.affected_rows
@@ -323,6 +323,7 @@ class Component
 
 			#I got here because it failed too many times
 			LOG.fatal("component.connect: Giving up for good this time : #{e.errno} : #{e.error}")
+			LOG.fatal("component.connect: called by #{caller}")
 			raise
 		end
 	end
@@ -336,6 +337,7 @@ class Component
 		else 
 			#complain if I it didn't exist
 			LOG.fatal("component.disconnect: Mysql object is nil, can't disconnect")
+			LOG.fatal("component.disconnect: called by #{caller}")
 		end
 	end
 
