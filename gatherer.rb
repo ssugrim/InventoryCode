@@ -1,5 +1,5 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.30 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 2.31 - Gathers information about various sytem files and then  checks them against mysql tables
 #
 #TODO can't detect usrp2 this way. 
 #TODO my update checks currently trash information if, I can't retreieve it. Should this do something more subtle?
@@ -790,12 +790,20 @@ class Usb < Device
 			LOG.debug("Usb.update: Device list empty")
 			return 0
 		end
+		
+		#get the device kinds and make them part of the hash
+		@device.each {|hsh|hsh.store("devid",get_device_kind(hsh["vend"],hsh["prod"],hsh["name"],"USB",inv_id))}
+
+		#removes duplicate devices by making an array of unique devid's and then mapping back a representive from the device array.
+		unique = @device.map{|hsh| hsh["devid"]}.uniq.map{|x| @device.inject{|l,s| s["devid"] == x ? s : l}}
+
+		LOG.debug("Usb.update: Uniqe Usb Devices #{unique}")
 
 		#list of headers from device the table, smaller because we have less information
 		headers = ["id","inventory_id","device_kind_id","motherboard_id","address"]
 		
 		#need to get device id first, because I can't look for macs
-		gat_data = @device.map{|hsh| [inv_id,get_device_kind(hsh["vend"],hsh["prod"],hsh["name"],"USB",inv_id),mb_id,hsh['bus']+":"+hsh["devnum"]]}
+		gat_data = unique.map{|hsh| [inv_id,hsh["devid"],mb_id,hsh['bus']+":"+hsh["devnum"]]}
 		
 		# the sql data array, matched against device id and mb_id, there is a huge flaw here, since this query can be ambigous
 		# It must be assumed that onyl a single device of device_kind can be connected at a time to a node, multiple types will break
