@@ -7,7 +7,7 @@
 require 'optparse'
 require 'logger'
 require 'open3'
-require 'mysql'
+#require 'mysql'
 require 'find'
 require 'singleton'
 
@@ -563,6 +563,11 @@ class Motherboard < Component
 		#keep only elements with a size value
 		@disk = @disk.select{|hsh| hsh['size']}
 		LOG.debug("Motherboard.initalize: number of disks found #{@disk.length}")
+		if @disk.empty? and @bios
+			LOG.fatal("Motherboard.initalize: No Disk or Mother Board Serial Cannont Continue")
+			raise NoMBIdError
+		end
+		
 		
 		#delcaring mb_id/loc_id for good measure
 		@mb_id = nil
