@@ -1,8 +1,10 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.31 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 2.4 - Gathers information about various sytem files and then  checks them against mysql tables
 #
 #TODO can't detect usrp2 this way. 
 #TODO my update checks currently trash information if, I can't retreieve it. Should this do something more subtle?
+#TODO rewite to Use containers (system should contain mother board which should contain an array of devices) System should have a top level
+#error string that gets checked in.
 
 require 'optparse'
 require 'logger'
@@ -105,8 +107,12 @@ if $options[:debug] then LOG.level = Logger::DEBUG else LOG.level = Logger::INFO
 class  NoMbidError < RuntimeError
 end
 
+class  NoHdError < RuntimeError
+end
+
 class  NoLocidError < RuntimeError
 end
+
 
 #Component parent class
 #Not ment to be instantiated
@@ -448,8 +454,9 @@ class System < Component
 
 	def check_in(loc_id, error = "")
 		#simple update call
+		#can be called with single argument, or with a second error string paremeter. 
+		#Can use the error string to log error infomation to SQL
 		#should only be called once
-		#TODO FISH THIS
 			return sql_insert("check_in",Hash["error"=>error,"time"=>sql_now(),"id"=>loc_id]) if sql_query("check_in",["time"],Hash["id"=>loc_id]).empty?
 			return sql_update("check_in",Hash["error"=>error,"time"=>sql_now()],Hash["id"=>loc_id]) 
 	end
@@ -568,10 +575,14 @@ class Motherboard < Component
 			tmp_hsh['size'] = uconvert(arr.map{|line| line.split(":",2)[1].strip if /size:/.match(line)}.flatten.compact.first)
 			tmp_hsh
 		end
+		
+		#Give complain if I have no Disk
+		raise NoHdError if @disk.empty?
 
 		#keep only elements with a size value
 		@disk = @disk.select{|hsh| hsh['size']}
 		LOG.debug("Motherboard.initalize: number of disks found #{@disk.length}")
+		$repErrorString = "I have no disks" if @disk.empty?
 
 		@mb_id = nil
 	end
@@ -872,6 +883,8 @@ if __FILE__ == $0
 		LOG.info("Main: checking in, #{System.instance.check_in(loc_id)} rows changed")
 	rescue NoMbidError
 		LOG.fatal("Main: checking in with error, #{System.instance.check_in(loc_id,"Mother Board Identifcation failed. No motherboard/Diski Serial found")} rows changed")
+	rescue NoHdError
+		LOG.fatal("Main: checking in with error, #{System.instance.check_in(loc_id,"No Disk found")} rows changed")
 	ensure	
 		#Must close connection reguardless of results. 
 		LOG.info("Main: disconnecting from Database #{$options[:server]}")
