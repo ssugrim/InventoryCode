@@ -7,7 +7,7 @@
 require 'optparse'
 require 'logger'
 require 'open3'
-#require 'mysql'
+require 'mysql'
 require 'find'
 require 'singleton'
 
@@ -100,6 +100,14 @@ $optparse.parse!
 LOG = Logger.new($options[:logfile], 'weekly')
 if $options[:debug] then LOG.level = Logger::DEBUG else LOG.level = Logger::INFO end
 
+#Some Custom Errors
+
+class  NoMbidError < RuntimeError
+end
+
+class  NoLocidError < RuntimeError
+end
+
 #Component parent class
 #Not ment to be instantiated
 class Component
@@ -133,6 +141,7 @@ class Component
 			errarr = stderr.readlines
 			LOG.debug("Component.lshw_arr: Error output of call to lshw:: #{errarr}") unless errarr.empty?
 			errarr.each do |line|
+				#TODO make this a curstom error
 				raise "lshw not found" if /No such file or directory/.match(line)
 			end
 		rescue Exception => e
@@ -163,6 +172,7 @@ class Component
 			errarr = stderr.readlines
 			LOG.debug("Component.lsusb_arr: Error output of call to lsusb:: #{errarr}") unless errarr.empty?
 			errarr.each do |line|
+				#TODO make this a curstom error
 				raise "lsusb not found" if /No such file or directory/.match(line)
 			end
 		rescue Exception => e
@@ -428,7 +438,7 @@ class System < Component
 			@loc_id = sql_query("locations",["id"],Hash["x"=>cords[0],"y"=>cords[1],"testbed_id"=>testbed_id]).flatten.first
 			unless @loc_id
 				LOG.fatal("System.get_loc_id: Query for location Id failed, I can't continue")
-				raise NoLocationIdError
+				raise NoLocidError
 			end
 		end
 
@@ -436,13 +446,12 @@ class System < Component
 		return @loc_id
 	end
 
-	def check_in(loc_id)
+	def check_in(loc_id, error = "")
 		#simple update call
-		#TODO query for id first, update if there, insert if missing
 		#should only be called once
-
-		return sql_insert("check_in",Hash["time"=>sql_now(),"id"=>loc_id]) if sql_query("check_in",["time"],Hash["id"=>loc_id]).empty?
-		return sql_update("check_in",Hash["time"=>sql_now()],Hash["id"=>loc_id]) 
+		#TODO FISH THIS
+			return sql_insert("check_in",Hash["error"=>error,"time"=>sql_now(),"id"=>loc_id]) if sql_query("check_in",["time"],Hash["id"=>loc_id]).empty?
+			return sql_update("check_in",Hash["error"=>error,"time"=>sql_now()],Hash["id"=>loc_id]) 
 	end
 
 	def get_inv_id()
@@ -563,13 +572,7 @@ class Motherboard < Component
 		#keep only elements with a size value
 		@disk = @disk.select{|hsh| hsh['size']}
 		LOG.debug("Motherboard.initalize: number of disks found #{@disk.length}")
-		if @disk.empty? and @bios
-			LOG.fatal("Motherboard.initalize: No Disk or Mother Board Serial Cannont Continue")
-			raise NoMBIdError
-		end
-		
-		
-		#delcaring mb_id/loc_id for good measure
+
 		@mb_id = nil
 	end
 
@@ -589,7 +592,7 @@ class Motherboard < Component
 				update(System.instance.get_inv_id())
 				@mb_id = sql_query("motherboards",["id"],Hash["mfr_sn" => @uuid]).first
 			end
-		else
+		elsif !@disk.empty?
 			@mb_id = sql_query("motherboards",["id"],Hash["hd_sn" => @disk.first['serial']]).first unless @mb_id
 			LOG.warn("Motherboard.get_mb_id: No UUID was found, matching agasint first Disk serial")
 			unless @mb_id
@@ -597,6 +600,9 @@ class Motherboard < Component
 				update(System.instance.get_inv_id())
 				@mb_id = sql_query("motherboards",["id"],Hash["hd_sn" => @disk.first['serial']]).first
 			end
+		else
+			LOG.fatal("Motherboard.initalize: No Disk or Mother Board Serial Cannont Continue")
+			raise NoMbidError
 		end
 
 		return @mb_id
@@ -864,6 +870,8 @@ if __FILE__ == $0
 		LOG.info("Main: Network #{Network.instance.update(inv_id,mb_id)} device rows changed")
 		LOG.info("Main: Usb #{Usb.instance.update(inv_id,mb_id)} device rows changed")
 		LOG.info("Main: checking in, #{System.instance.check_in(loc_id)} rows changed")
+	rescue NoMbidError
+		LOG.fatal("Main: checking in with error, #{System.instance.check_in(loc_id,"Mother Board Identifcation failed. No motherboard/Diski Serial found")} rows changed")
 	ensure	
 		#Must close connection reguardless of results. 
 		LOG.info("Main: disconnecting from Database #{$options[:server]}")
