@@ -882,9 +882,12 @@ if __FILE__ == $0
 		LOG.info("Main: Usb #{Usb.instance.update(inv_id,mb_id)} device rows changed")
 		LOG.info("Main: checking in, #{System.instance.check_in(loc_id)} rows changed")
 	rescue NoMbidError
-		LOG.fatal("Main: checking in with error, #{System.instance.check_in(loc_id,"Mother Board Identifcation failed. No motherboard/Diski Serial found")} rows changed")
+		LOG.fatal("Main: checking in with error, #{System.instance.check_in(loc_id,"Mother Board Identifcation failed. No motherboard/Disk Serial found")} rows changed")
 	rescue NoHdError
 		LOG.fatal("Main: checking in with error, #{System.instance.check_in(loc_id,"No Disk found")} rows changed")
+	rescue Exception => e
+		LOG.fatal("Main: checking in with error, #{System.instance.check_in(loc_id,e.message)} rows changed")
+		raise
 	ensure	
 		#Must close connection reguardless of results. 
 		LOG.info("Main: disconnecting from Database #{$options[:server]}")

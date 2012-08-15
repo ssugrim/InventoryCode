@@ -4,7 +4,7 @@
 
 defApplication('inventory','gather') {|app|
 	app.shortDescription = "Inventory Gathering Process"
-	app.path = "sudo /root/gatherer.rb -d -l /tmp/gather.log"
+	app.path = "sudo /root/gatherer.rb -d -U /usr/sbin/lsusb -D inventory52 -l /tmp/gather.log"
 }
 
 defGroup('nodes','system:topo:active') { |node|
