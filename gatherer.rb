@@ -1,7 +1,7 @@
 #!/usr/bin/ruby1.8 -w
 # gatherer.rb version 2.4 - Gathers information about various sytem files and then  checks them against mysql tables
 #
-#TODO can't detect usrp2 this way. 
+#ETODO can't detect usrp2 this way. 
 #error string that gets checked in.
 
 require 'optparse'
@@ -22,6 +22,9 @@ end
 class  NoLocidError < StandardError
 end
 
+class BinaryNotFound < StandardError
+end
+
 class DBhelper
 	#some inventory specfic Rest DB functions, the model here is there is a prepared database object and the update functions of each of the classes uses a helper object to write to the API
 	def initialize(host,node)
@@ -30,7 +33,6 @@ class DBhelper
 		@db = Database.new(host)
 		@node = node
 	end
-
 
 	def get_attr(name)
 		#name is a string, the name of the attribute you want the value for. This will return the value of the given named attribute
@@ -61,14 +63,17 @@ class DBhelper
 		end
 	end
 
+	def check_in(now)
+		#now is a string, a time stamp
+		return add_attr("check_in",now)
+	end
 end
 
 class System 
 	include Singleton
-	#TODO perhaps this should merge with  DB helper since most of the information is needed for that
-	#host name, we only need to check it once, but will pass the object around alot
+	#System identification information
 	def initialize()
-		#TODO we'll need to gets these params from OPT parse at some point
+		#TODO we'll need to get exectuables as params from OPT parse at some point
 		begin
 			@log  = LOG.instance
 			@fqdn = `hostname -f`.chomp
@@ -82,15 +87,50 @@ class System
 		end
 	end
 
-	def check_in(db)
-		#db is a DBhelper object, it's used to checkin to the system 
-		return db.add_attr("check_in",sys.now)
-	end
 
 	attr_reader :fqdn,:y, :x, :now
 end
 
-#TODO build out the other 3 data classes Motherboard, Network, USB
+class LshwData
+	def initialize(flag)
+	#Arugments: 
+	#Flag - what device class to pass to lshw (see lshw webpage)  - Mandatory
+	#Returns an Array of lines from lshw output, if a marker is specfied the array is folded at the markers (markers discarded)
+		
+	@flag = flag
+	@log  = LOG.instance
+	begin
+		stdin, stdout, stderr = Open3.popen3("#{$options[:loclshw]} -numeric -c #{@flag}")
+		raise (BinaryNotFound, "lshw") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+	rescue BinaryNotFound => e
+		@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+		@log.fatal("Component.lshw_arr: called by #{caller}")
+		raise
+	end
+	
+	rawdata = stdout.readlines.join(" ")
+	@data = rawdata.split(/\*-/).map{|str| str.scan(/(\S.*?):(.*$)/)}.select{|arr| !arr.empty?}
+	end
+
+	attr_reader :data, :flag
+end
+
+class LsusbData
+	def initialize()
+	#Returns an Array of lines from lsusb output
+		@log  = LOG.instance
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:loclsusb]}")
+			raise (BinaryNotFound, "lshw") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+			@log.fatal("Component.lshw_arr: called by #{caller}")
+			raise
+		end
+		@data = stdout.readlines.map{|str| str.match(/Bus\s(\d*)\sDevice\s(\d*):\sID\s(\w*:\w*)(.*$)/).captures}
+	end
+	attr_reader :data
+end
 
 if __FILE__ == $0
 	$options = Hash.new()
@@ -117,7 +157,7 @@ if __FILE__ == $0
 		end
 
 		#LSUSB location
-		$options[:loclsusb] = '/sbin/lsusb'
+		$options[:loclsusb] = '/usr/sbin/lsusb'
 		opts.on('-U','--lsusb FILE','location of lshsb executeable (default: /sbin/lsusb)') do |file|
 			$options[:loclsusb] = file
 		end
@@ -140,20 +180,27 @@ if __FILE__ == $0
 	#Log Initalise
 	log = LOG.instance
 	log.info("Main: Begin Gatherer.rb - For more information check www.orbit-lab.org")
-	log.set_file($options[:logfile]) if $options[:logfile]
+	if $options[:logfile]
+		log.info("Main: Diverting output to #{$options[:logfile]}")
+		log.set_file($options[:logfile]) 
+	end
 	log.set_debug if $options[:debug]
 
 	begin
 		#need to know the node name before you instantiate the DB	
 		sys = System.instance
-		
-		#TODO sys.fqdn should be the second argument
-		db = DBhelper.new($options[:dbserver],"node1-1.sb1.orbit-lab.org")
+	
+		#now that we know the fqdn, we can make a DBhleper	
+		db = DBhelper.new($options[:dbserver],sys.fqdn)
 
-		puts db.add_attr("check_in",sys.now)
-		puts db.get_attr("check_in")
+		#then use that db helper to checkin
+		db.check_in(sys.now)
+
+		puts LshwData.new("network").data.length
+		puts LsusbData.new().data.length
 	ensure	
 		#Must close connection reguardless of results. 
+		puts "Script done."
 		log.close
 	end
 end
