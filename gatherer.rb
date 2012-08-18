@@ -25,6 +25,41 @@ end
 class BinaryNotFound < StandardError
 end
 
+class Tools
+	#Class of Tools common to every one
+	def self.tuple?(c)
+		#the definintion of a tuple, 
+	       	return(c.class == Array and c.length == 2 and c.count{|d| d.class == Array} == 0)
+	end
+
+	def self.contains?(w,c)
+		#does this nestest structure contain the word w
+		return !c.join(" ").match(Regexp.escape(w)).nil?
+	end
+
+	def self.tuples(s,c)
+		#pulls out nested tuples 
+		if self.tuple?(c)
+			#if it is a tuple save it
+			s.push(c)
+		else
+			#other wise try each sub element if I have any
+			c.each{|f| tuples(s,f)} if c.class == Array
+		end
+	end
+
+	def self.dig(w,s,c)
+		#recursivley digs nested arrays and find the containers of word
+		if self.tuple?(c)
+			#does it contain word, save it.
+			s.push(c) if self.contains?(w,c)
+		else
+			#otherwise try every sub element
+			c.each{|f| dig(w,s,f)} if c.class == Array
+		end
+	end
+end
+
 class DBhelper
 	#some inventory specfic Rest DB functions, the model here is there is a prepared database object and the update functions of each of the classes uses a helper object to write to the API
 	def initialize(host,node)
@@ -69,50 +104,65 @@ class DBhelper
 	end
 end
 
-class System 
+class NodeData
 	include Singleton
-	#System identification information
+	#Node identification information
 	def initialize()
 		#TODO we'll need to get exectuables as params from OPT parse at some point
 		begin
 			@log  = LOG.instance
-			@fqdn = `hostname -f`.chomp
-			@now = `date +"%F %H:%M"`.chomp
+
+			stdin, stdout, stderr = Open3.popen3("#{$options[:lochostname]} -f")
+			raise(BinaryNotFound, "hostname") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+			@fqdn = stdout.readlines.join(" ").chomp
+
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locdate]}")
+			raise(BinaryNotFound, "Date") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+			@now = stdout.readlines.join(" ").chomp
+
 			@log.debug("Os said the fqdn was #{@fqdn}, and the date/time is #{@now}")
 			md = @fqdn.match(/node(\d+)-(\d+)./)
 			@x,@y = md.captures unless md.nil?
+		rescue BinaryNotFound => e
+			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+			@log.fatal("Component.lshw_arr: called by #{caller}")
+			raise
 		rescue
 			@log.fatal("Something broke while getting system info")
 			raise
 		end
 	end
 
-
 	attr_reader :fqdn,:y, :x, :now
 end
 
 class LshwData
 	def initialize(flag)
-	#Arugments: 
-	#Flag - what device class to pass to lshw (see lshw webpage)  - Mandatory
-	#Returns an Array of lines from lshw output, if a marker is specfied the array is folded at the markers (markers discarded)
-		
-	@flag = flag
-	@log  = LOG.instance
-	begin
-		stdin, stdout, stderr = Open3.popen3("#{$options[:loclshw]} -numeric -c #{@flag}")
-		raise (BinaryNotFound, "lshw") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-	rescue BinaryNotFound => e
-		@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
-		@log.fatal("Component.lshw_arr: called by #{caller}")
-		raise
-	end
+		#Arugments: 
+		#Flag - what device class to pass to lshw (see lshw webpage)  - Mandatory
+		#Returns an Array of lines from lshw output, if a marker is specfied the array is folded at the markers (markers discarded)
+
+		@flag = flag
+		@log  = LOG.instance
 	
-	rawdata = stdout.readlines.join(" ")
-	@data = rawdata.split(/\*-/).map{|str| str.scan(/(\S.*?):(.*$)/)}.select{|arr| !arr.empty?}
+		#A recursive lambda function the returns flat level of 2 tuples for any level of nesting
+		#It checks if an element is lenght 2 and does not contain arrays. Passing this check will cause the element to be stored, failing will cause a recursive call.
+		tuples = lambda {|store,current| current.length == 2 and current.select{|dummy| dummy.class == Array}.empty? ? store.push(current) : current.each{|future| tuples.call(store,future)}}
+
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:loclshw]} -numeric -c #{@flag}")
+			raise(BinaryNotFound, "lshw") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+			@log.fatal("Component.lshw_arr: called by #{caller}")
+			raise
+		end
+
+		@data = stdout.readlines.join(" ").split(/\*-/).map{|str| str.scan(/(\S.*?):(.*$)/)}.select{|arr| !arr.empty?}
+		@log.debug("LshwData: found #{@data.length} hits for flag #{@flag}")
 	end
 
-	attr_reader :data, :flag
+	attr_reader :data, :flag 
 end
 
 class LsusbData
@@ -121,15 +171,52 @@ class LsusbData
 		@log  = LOG.instance
 		begin
 			stdin, stdout, stderr = Open3.popen3("#{$options[:loclsusb]}")
-			raise (BinaryNotFound, "lshw") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+			raise(BinaryNotFound, "lsusb") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
 		rescue BinaryNotFound => e
 			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
 			@log.fatal("Component.lshw_arr: called by #{caller}")
 			raise
 		end
+
 		@data = stdout.readlines.map{|str| str.match(/Bus\s(\d*)\sDevice\s(\d*):\sID\s(\w*:\w*)(.*$)/).captures}
+		@log.debug("LsusbData: found #{@data.length} hits")
 	end
 	attr_reader :data
+end
+
+class System 
+	#container class for System Data: Motherboard, CPU, Memory, Disk
+	def initialize()
+		@log=LOG.instance
+
+		#extract the Memory Size
+		mem = LshwData.new("memory").data.select{|x| Tools.contains?("System Memory",x)}
+		mem_hold = Array.new
+		Tools.dig("size",mem_hold,mem)
+		@memory = mem_hold.flatten.map{|d| d.strip}.last
+
+		#extract the CPU clock speed and product string
+		cpu = LshwData.new("cpu").data.select{|x| Tools.contains?("slot",x)}
+		cpu_hz_hold = Array.new
+		Tools.dig("size",cpu_hz_hold,cpu)
+		@cpu_hz = cpu_hz_hold.flatten.map{|d| d.strip}.last
+
+		cpu_vend = Array.new
+		Tools.dig("vendor",cpu_vend,cpu)
+		cpu_vend.flatten!.map!{|d| d.strip}
+
+		cpu_prod = Array.new
+		Tools.dig("product",cpu_prod,cpu)
+		cpu_prod.flatten!.map!{|d| d.strip}
+		
+		cpu_ver = Array.new
+		Tools.dig("version",cpu_ver,cpu)
+		cpu_ver.flatten!.map!{|d| d.strip}
+
+		@cpu_type = cpu_vend.last + " " + cpu_prod.last + " " + cpu_ver.last
+	end
+
+	attr_reader :memory, :cpu_hz, :cpu_type
 end
 
 if __FILE__ == $0
@@ -145,8 +232,8 @@ if __FILE__ == $0
 		end
 
 		#Log File Location
-		$options[:logfile] = STDOUT
-		opts.on('-l','--logfile FILE','Where to store the log file (default: /tmp/gatherer.log)') do |file|
+		$options[:logfile] = nil
+		opts.on('-l','--logfile FILE','Where to store the log file (default: STDOUT)') do |file|
 			$options[:logfile] = file
 		end
 
@@ -158,8 +245,20 @@ if __FILE__ == $0
 
 		#LSUSB location
 		$options[:loclsusb] = '/usr/sbin/lsusb'
-		opts.on('-U','--lsusb FILE','location of lshsb executeable (default: /sbin/lsusb)') do |file|
+		opts.on('-U','--lsusb FILE','location of lsusb executeable (default: /usr/sbin/lsusb)') do |file|
 			$options[:loclsusb] = file
+		end
+
+		#HOSTNAME location
+		$options[:lochostname] = '/bin/hostname'
+		opts.on('-H','--hostname FILE','location of hostname executeable (default: /bin/hostname)') do |file|
+			$options[:lochostname] = file
+		end
+
+		#HOSTNAME location
+		$options[:locdate] = '/bin/date'
+		opts.on('-D','--date FILE','location of date executeable (default: /bin/date)') do |file|
+			$options[:locdate] = file
 		end
 
 		#DB host
@@ -184,20 +283,26 @@ if __FILE__ == $0
 		log.info("Main: Diverting output to #{$options[:logfile]}")
 		log.set_file($options[:logfile]) 
 	end
-	log.set_debug if $options[:debug]
+	if $options[:debug]
+		log.set_debug 
+		log.debug("Options specfied are \n#{$options.to_a.join("\n")}")
+	end
 
 	begin
 		#need to know the node name before you instantiate the DB	
-		sys = System.instance
+		nd = NodeData.instance
 	
 		#now that we know the fqdn, we can make a DBhleper	
-		db = DBhelper.new($options[:dbserver],sys.fqdn)
+		db = DBhelper.new($options[:dbserver],nd.fqdn)
 
 		#then use that db helper to checkin
-		db.check_in(sys.now)
+		db.check_in(nd.now)
 
-		puts LshwData.new("network").data.length
-		puts LsusbData.new().data.length
+		sys = System.new()
+		puts sys.memory
+		puts sys.cpu_hz
+		puts sys.cpu_type
+
 	ensure	
 		#Must close connection reguardless of results. 
 		puts "Script done."
