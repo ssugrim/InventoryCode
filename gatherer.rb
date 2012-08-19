@@ -37,26 +37,20 @@ class Tools
 		return !c.join(" ").match(Regexp.escape(w)).nil?
 	end
 
-	def self.tuples(s,c)
+	def self.tuples(current)
 		#pulls out nested tuples 
-		if self.tuple?(c)
-			#if it is a tuple save it
-			s.push(c)
-		else
-			#other wise try each sub element if I have any
-			c.each{|f| tuples(s,f)} if c.class == Array
-		end
+		store = Array.new
+		calc = lambda {|s,c| self.tuple?(c) ? s.push(c) : (c.each{|f| calc.call(s,f)} if c.class == Array)}
+		calc.call(store,current)
+		return store
 	end
 
-	def self.dig(w,s,c)
-		#recursivley digs nested arrays and find the containers of word
-		if self.tuple?(c)
-			#does it contain word, save it.
-			s.push(c) if self.contains?(w,c)
-		else
-			#otherwise try every sub element
-			c.each{|f| dig(w,s,f)} if c.class == Array
-		end
+	def self.dig(word, current)
+		#recursivley digs nested arrays and find the containers of word should only dig into things can contain a unquie copy of word
+		store = Array.new
+		calc = lambda {|w,s,c| self.tuple?(c) ? (s.push(c) if self.contains?(w,c)) : (c.each{|f| calc.call(w,s,f)} if c.class == Array)}
+		calc.call(word,store,current)
+		return store.flatten
 	end
 end
 
@@ -90,6 +84,7 @@ class DBhelper
 	
 	def add_attr(name,value)
 		#name, value are strings. name is the name of the attribute to be added, and value is it's value
+		#Check if the attribute exists first, delete it if it does. 
 		if get_attr(name).nil?
 			return @db.add_attr(@node,name,value)
 		else
@@ -191,32 +186,65 @@ class System
 
 		#extract the Memory Size
 		mem = LshwData.new("memory").data.select{|x| Tools.contains?("System Memory",x)}
-		mem_hold = Array.new
-		Tools.dig("size",mem_hold,mem)
-		@memory = mem_hold.flatten.map{|d| d.strip}.last
+		@memory = Tools.dig("size",mem).last.strip
 
 		#extract the CPU clock speed and product string
+		#TODO figure out how to count CPU's
 		cpu = LshwData.new("cpu").data.select{|x| Tools.contains?("slot",x)}
-		cpu_hz_hold = Array.new
-		Tools.dig("size",cpu_hz_hold,cpu)
-		@cpu_hz = cpu_hz_hold.flatten.map{|d| d.strip}.last
+		@cpu_hz = Tools.dig("size",cpu).last.strip
+		cpu_vend = Tools.dig("vendor",cpu).last.strip
+		cpu_prod = Tools.dig("product",cpu).last.strip
+		cpu_ver = Tools.dig("version",cpu).last.strip
+		@cpu_type = cpu_vend + " " + cpu_prod + " " + cpu_ver
 
-		cpu_vend = Array.new
-		Tools.dig("vendor",cpu_vend,cpu)
-		cpu_vend.flatten!.map!{|d| d.strip}
+		#extract the disk data
+		disk = LshwData.new("disk")
+		@hd_size = Tools.dig("size",disk.data).last.strip
+		@hd_sn = Tools.dig("serial",disk.data).last.strip
 
-		cpu_prod = Array.new
-		Tools.dig("product",cpu_prod,cpu)
-		cpu_prod.flatten!.map!{|d| d.strip}
-		
-		cpu_ver = Array.new
-		Tools.dig("version",cpu_ver,cpu)
-		cpu_ver.flatten!.map!{|d| d.strip}
-
-		@cpu_type = cpu_vend.last + " " + cpu_prod.last + " " + cpu_ver.last
+		#extract the motherboard serial number 
+		@mb_sn = nil
+		mb = LshwData.new("system")
+		uuid_str = Tools.dig("uuid",mb.data).last
+		@mb_sn = uuid_str.match(/uuid=(.*$)/).captures.first.strip unless uuid_str == nil
 	end
 
-	attr_reader :memory, :cpu_hz, :cpu_type
+	def update(db)
+		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
+		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn])
+		if @mb_sn.nil?
+			return  data.map{|arr| db.add_attr(arr[0],arr[1])}.join(" ") + db.add_attr("mb_sn","unknown")
+		else
+			return  data.map{|arr| db.add_attr(arr[0],arr[1])}.join(" ") + db.add_attr("mb_sn",@mb_sn)
+		end
+
+	end
+
+	attr_reader :memory, :cpu_hz, :cpu_type, :hd_size, :hd_sn, :mb_sn
+end
+
+class Network
+	#container class for all of the network interface information
+	def initialize()
+		@log=LOG.instance
+
+		net = LshwData.new("network")
+		#collect mac address by diging the serial keword then rejecting the actual word serial (since we're flattening the tuples).
+		macs =  Tools.dig("serial",net.data).reject{|x| x.match(/serial/)}.map{|x| x.strip}
+
+		#pair the mac with the array of extracted data it came from
+		rawdata = macs.map{|mac| [mac,Tools.tuples(net.data.select{|arr| Tools.contains?(mac,arr)})]}
+
+		#extract out the chipset identifcation information
+		@interfaces = rawdata.map{|x| [x[0],Tools.dig("product",x[1]).last.strip + " " + Tools.dig("vendor",x[1]).last.strip]}
+	end
+
+	def update(db)
+		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
+		return @interfaces.each_with_index.map{|x,i| db.add_attr("if#{i}_mac",x[0]) + " " + db.add_attr("if#{i}_type",x[1])}.join(" ")
+	end
+
+	attr_reader :interfaces
 end
 
 if __FILE__ == $0
@@ -299,9 +327,12 @@ if __FILE__ == $0
 		db.check_in(nd.now)
 
 		sys = System.new()
-		puts sys.memory
-		puts sys.cpu_hz
-		puts sys.cpu_type
+		log.debug(sys.update(db))
+		log.info("Main: System data update complete")
+
+		net = Network.new()
+		log.debug(net.update(db))
+		log.info("Main: Network data update complete")
 
 	ensure	
 		#Must close connection reguardless of results. 
