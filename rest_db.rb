@@ -89,8 +89,8 @@ class Database
 		host  = @host + "resource/show"
 		begin
 			result = RestClient.get host, {:params => {:hrn => node}}
-			return result.to_str.scan(/(\S*)='(.*?)'/)
 			raise GetAttrError unless result.to_str.scan(/ERROR/).empty?
+			return result.to_str.scan(/(\S*)='(.*?)'/)
 		rescue GetAttrError
 			@log.warn("Get attribute failed with error \n #{result.to_str}")
 			raise
