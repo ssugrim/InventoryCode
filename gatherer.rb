@@ -85,10 +85,10 @@ class DBhelper
 	def add_attr(name,value)
 		#name, value are strings. name is the name of the attribute to be added, and value is it's value
 		#Check if the attribute exists first, delete it if it does. 
-		if get_attr(name).nil?
-			return @db.add_attr(@node,name,value)
+		del_attr(name) unless get_attr(name).nil?
+		if value.nil?
+			return @db.add_attr(@node,name,"N/A")
 		else
-			del_attr(name)
 			return @db.add_attr(@node,name,value)
 		end
 	end
@@ -236,15 +236,41 @@ class Network
 		rawdata = macs.map{|mac| [mac,Tools.tuples(net.data.select{|arr| Tools.contains?(mac,arr)})]}
 
 		#extract out the chipset identifcation information
-		@interfaces = rawdata.map{|x| [x[0],Tools.dig("product",x[1]).last.strip + " " + Tools.dig("vendor",x[1]).last.strip]}
+		@interfaces = rawdata.map{|x| [x[0],Tools.dig("product",x[1]).last.strip + " " + Tools.dig("vendor",x[1]).last.strip,Tools.dig("logical name",x[1]).last.strip]}
 	end
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
-		return @interfaces.each_with_index.map{|x,i| db.add_attr("if#{i}_mac",x[0]) + " " + db.add_attr("if#{i}_type",x[1])}.join(" ")
+		return @interfaces.each_with_index.map{|x,i| db.add_attr("if#{i}_mac",x[0]) + " " + db.add_attr("if#{i}_type",x[1]) + " " + db.add_attr("if#{i}_name",x[2])}.join(" ")
 	end
 
 	attr_reader :interfaces
+end
+
+class USB
+	#container for USB information
+	def initialize()
+		@log=LOG.instance
+		
+		@devices = nil
+		#extract usb data
+		#there should be any multi level nesting, drop any kvm or Internal USB hub records
+		rawdata	=  LsusbData.new().data.reject{|x| Tools.contains?("ATEN International",x) or Tools.contains?("Linux Foundation",x)}
+
+		#all we care about are the device names, lsusb output should be fairly constant
+		unless rawdata.empty?
+			@devices = rawdata.map{|x| x[3].strip} 
+			@log.debug("USB: Actual devices found: #{@devices.length}. They are:\n#{@devices.join("\n")}")
+		end
+	end
+
+	def update(db)
+		if @devices.nil?
+			return nil
+		else
+			return @devices.each_with_index.map{|x,i| db.add_attr("usb#{i}_type",x)}.join(" ")
+		end
+	end
 end
 
 if __FILE__ == $0
@@ -334,9 +360,13 @@ if __FILE__ == $0
 		log.debug(net.update(db))
 		log.info("Main: Network data update complete")
 
+		usb = USB.new()
+		log.debug(usb.update(db))
+		log.info("Main: USB data update complete")
+
 	ensure	
 		#Must close connection reguardless of results. 
-		puts "Script done."
+		puts "Main:Script done."
 		log.close
 	end
 end
