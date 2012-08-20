@@ -99,4 +99,23 @@ class Database
 			raise
 		end
 	end
+
+	def get_all_attr(fqdn)
+		#gets the attribues of a given node from the data base
+		#node is a string, the FQDN of the node we want data for
+		host  = @host + "resource/list" 
+		begin
+			result = RestClient.get host, {:params => {:hrn => fqdn}}
+			raise GetAttrError unless result.to_str.scan(/ERROR/).empty?
+			nodes = result.scan(/<NODE(.*?)\/>/)
+			return nodes.map{|arr| arr.first.scan(/(\S*)='(.*?)'/)}
+		rescue GetAttrError
+			@log.warn("Get attribute failed with error \n #{result.to_str}")
+			raise
+		rescue
+			@log.fatal("Attribute retrival failed")
+			raise
+		end
+	end
+
 end
