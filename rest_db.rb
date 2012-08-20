@@ -13,6 +13,35 @@ end
 class GetAttrError < StandardError
 end
 
+class Tools
+	#Class of Tools  for manipulating the arrays from the DB
+	def self.tuple?(c)
+		#the definintion of a tuple, 
+	       	return(c.class == Array and c.length == 2 and c.count{|d| d.class == Array} == 0)
+	end
+
+	def self.contains?(w,c)
+		#does this nestest structure contain the word w
+		return !c.join(" ").match(Regexp.escape(w)).nil?
+	end
+
+	def self.tuples(current)
+		#pulls out nested tuples 
+		store = Array.new
+		calc = lambda {|s,c| self.tuple?(c) ? s.push(c) : (c.each{|f| calc.call(s,f)} if c.class == Array)}
+		calc.call(store,current)
+		return store
+	end
+
+	def self.dig(word, current)
+		#recursivley digs nested arrays and find the containers of word should only dig into things can contain a unquie copy of word
+		store = Array.new
+		calc = lambda {|w,s,c| self.tuple?(c) ? (s.push(c) if self.contains?(w,c)) : (c.each{|f| calc.call(w,s,f)} if c.class == Array)}
+		calc.call(word,store,current)
+		return store.flatten
+	end
+end
+
 class Database
 	#Container for the live object rest api
 	def initialize(host)
