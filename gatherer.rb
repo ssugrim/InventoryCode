@@ -1,8 +1,9 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 2.4 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 3.0 - Gathers information about various sytem files and then  checks them against mysql tables
 #
-#ETODO can't detect usrp2 this way. 
-#error string that gets checked in.
+#TODO detect USRP2 via usrp scripts
+#TODO Count CPU cores?
+#TODO Check hard disk status with Smart Tool
 
 require 'optparse'
 require 'open3'
@@ -53,12 +54,21 @@ class DBhelper
 		#name is a string, the attribute name to be deleted
 		return	@db.del_attr(@node,name)
 	end
+
+	def del_all_attr()
+		#name is a string, the attribute name to be deleted
+		begin
+			return	@db.del_all_attr(@node)
+		rescue DelAttrError => e
+			e.message.match(/nothing to delete/).nil? ? raise : @log.warn("Attributtes were already deleted, Ignoring exception")
+		end
+
+	end
 	
 	def add_attr(name,value)
 		#name, value are strings. name is the name of the attribute to be added, and value is it's value
 		#Check if the attribute exists first, delete it if it does. 
-		del_attr(name) unless get_attr(name).nil?
-		if value.nil?
+		if value.nil? or value.empty?
 			return @db.add_attr(@node,name,"N/A")
 		else
 			return @db.add_attr(@node,name,value)
@@ -167,7 +177,7 @@ class System
 		cpu_vend = Tools.dig("vendor",cpu).last.strip
 		cpu_prod = Tools.dig("product",cpu).last.strip
 		cpu_ver = Tools.dig("version",cpu).last.strip
-		@cpu_type = cpu_vend + " " + cpu_prod + " " + cpu_ver
+		@cpu_type = (cpu_vend.nil? ? String.new : cpu_vend) + " " + (cpu_prod.nil? ? String.new : cpu_prod) + " " + (cpu_ver.nil? ? String.new : cpu_ver)
 
 		#extract the disk data
 		disk = LshwData.new("disk")
@@ -183,12 +193,8 @@ class System
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
-		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn])
-		if @mb_sn.nil?
-			return  data.map{|arr| db.add_attr(arr[0],arr[1])}.join(" ") + db.add_attr("mb_sn","unknown")
-		else
-			return  data.map{|arr| db.add_attr(arr[0],arr[1])}.join(" ") + db.add_attr("mb_sn",@mb_sn)
-		end
+		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn])
+		return  data.map{|arr| db.add_attr(arr[0],arr[1])}.join(" ")
 
 	end
 
@@ -208,7 +214,8 @@ class Network
 		rawdata = macs.map{|mac| [mac,Tools.tuples(net.data.select{|arr| Tools.contains?(mac,arr)})]}
 
 		#extract out the chipset identifcation information
-		@interfaces = rawdata.map{|x| [x[0],Tools.dig("product",x[1]).last.strip + " " + Tools.dig("vendor",x[1]).last.strip,Tools.dig("logical name",x[1]).last.strip]}
+		ifdata = rawdata.map{|x| [x[0],Tools.dig("product",x[1]).last, Tools.dig("vendor",x[1]).last, Tools.dig("logical name",x[1]).last]}
+		@interfaces = ifdata.map{|x| [x[0],(x[1].nil? ? String.new() : x[1].strip) + (x[2].nil? ? String.new() : x[2].strip), (x[3].nil? ? String.new() : x[3].strip)]}
 	end
 
 	def update(db)
@@ -227,8 +234,7 @@ class USB
 		@devices = nil
 		#extract usb data
 		#there should be any multi level nesting, drop any kvm or Internal USB hub records
-		rawdata	=  LsusbData.new().data.reject{|x| Tools.contains?("ATEN International",x) or Tools.contains?("Linux Foundation",x)}
-
+		rawdata	=  LsusbData.new().data.reject{|x| Tools.contains?("ATEN International",x) or Tools.contains?("Linux Foundation",x) or Tools.contains?("Intel Corp. Integrated Rate Matching Hub",x) }
 		#all we care about are the device names, lsusb output should be fairly constant
 		unless rawdata.empty?
 			@devices = rawdata.map{|x| x[3].strip} 
@@ -288,7 +294,7 @@ if __FILE__ == $0
 		end
 
 		#DB host
-		$options[:dbserver] = "http://internal1.orbit-lab.org:5053/inventory/"
+		$options[:dbserver] = "http://internal1.orbit-lab.org:5054/inventory/"
 		opts.on('-R','--restdb server','name of the Restfull Database server') do |server|
 			$options[:dbserver] = server
 		end
@@ -321,20 +327,28 @@ if __FILE__ == $0
 		#now that we know the fqdn, we can make a DBhleper	
 		db = DBhelper.new($options[:dbserver],nd.fqdn)
 
-		#then use that db helper to checkin
-		db.check_in(nd.now)
-
+		#we want to reset the node state so that it's ready to accept new data
+		log.info("Main: Dumping non-infrastructure attributes for #{nd.fqdn}")
+		db.del_all_attr()
+	
+		#update system data	
 		sys = System.new()
 		log.debug(sys.update(db))
 		log.info("Main: System data update complete")
 
+		#update network data	
 		net = Network.new()
 		log.debug(net.update(db))
 		log.info("Main: Network data update complete")
 
+		#update usb data	
 		usb = USB.new()
 		log.debug(usb.update(db))
 		log.info("Main: USB data update complete")
+
+		#then use that db helper to checkin
+		log.info("Main: Checking in")
+		db.check_in(nd.now)
 
 	ensure	
 		#Must close connection reguardless of results. 
