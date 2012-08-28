@@ -116,7 +116,7 @@ class Database
 	end
 
 	def del_all_node(fqdn, name)
-		#removes attribes from nodes 1..20 x 1..20
+		#removes an attribute from nodes 1..20 x 1..20
 		#name is the name of the attribute to delete
 		#TODO perhaps this should expect/accept an argument instead of globbing acroess all
 		sucess = 0
@@ -168,7 +168,7 @@ class Database
 		return result.to_str.scan(/(\S*)='(.*?)'/)
 	end
 
-	def get_all_attr(fqdn)
+	def get_all_node(fqdn)
 		#Gets the all the attributes for a given fqdn e.g. "grid.orbit-lab.org"
 		host  = @host + "resource/list" 
 		begin

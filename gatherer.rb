@@ -155,7 +155,7 @@ class LsusbData
 			raise
 		end
 
-		@data = stdout.readlines.map{|str| str.match(/Bus\s(\d*)\sDevice\s(\d*):\sID\s(\w*:\w*)(.*$)/).captures}
+		@data = stdout.readlines.map{|str| str.match(/Bus\s(\d*)\sDevice\s(\d*):\sID\s(.*$)/).captures}
 		@log.debug("LsusbData: found #{@data.length} hits")
 	end
 	attr_reader :data
@@ -237,7 +237,7 @@ class USB
 		rawdata	=  LsusbData.new().data.reject{|x| Tools.contains?("ATEN International",x) or Tools.contains?("Linux Foundation",x) or Tools.contains?("Intel Corp. Integrated Rate Matching Hub",x) }
 		#all we care about are the device names, lsusb output should be fairly constant
 		unless rawdata.empty?
-			@devices = rawdata.map{|x| x[3].strip} 
+			@devices = rawdata.map{|x| x.last.strip} 
 			@log.debug("USB: Actual devices found: #{@devices.length}. They are:\n#{@devices.join("\n")}")
 		end
 	end
