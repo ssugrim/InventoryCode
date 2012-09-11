@@ -179,6 +179,22 @@ class System
 		cpu_ver = Tools.dig("version",cpu).last.strip
 		@cpu_type = (cpu_vend.nil? ? String.new : cpu_vend) + " " + (cpu_prod.nil? ? String.new : cpu_prod) + " " + (cpu_ver.nil? ? String.new : cpu_ver)
 
+		#Simplified tag for searching purposes	
+		case 
+		when @cpu_type.match(/i7/)
+			@cpu_tag = "i7"
+		when @cpu_type.match(/i5/)
+			@cpu_tag = "i5"
+		when @cpu_type.match(/c3|C3/)
+			@cpu_tag = "C3"
+		when @cpu_type.match(/atom|Atom|ATOM/)
+			@cpu_tag = "Atom"
+		when @cpu_type.match(/AMD|amd/)
+			@cpu_tag = "AMD"
+		else
+			@cpu_tag = "Unknown"
+		end
+
 		#extract the disk data
 		disk = LshwData.new("disk")
 		@hd_size = Tools.dig("size",disk.data).last.strip
@@ -193,7 +209,7 @@ class System
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
-		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn])
+		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn","cpu_tag"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn,@cpu_tag])
 		return  data.map{|arr| db.add_attr(arr[0],arr[1])}.join(" ")
 
 	end
