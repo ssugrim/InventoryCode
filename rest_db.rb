@@ -85,7 +85,7 @@ class Database
 	#Container for the live object rest api
 	def initialize(host)
 		@log = LOG.instance
-		#By default this should be "http://internal1:5054/inventory/"
+		#By default this should be "http://internal1.orbit-lab.org:5054/inventory/"
 		@host = host
 		begin
 			connect = RestClient.get @host
@@ -102,7 +102,7 @@ class Database
 		#node, name node FQDN, and attribute name respectively. 
 		host  = @host + "attribute/delete"
 		begin
-			result = RestClient.get host, {:params => {:name => node, :attribute => name}}
+			result = RestClient.get host, {:params => {:rn => node, :attribute => name}}
 			@log.debug("Node #{node} had #{name} deleted  with result  #{result.to_str}")
 			raise DelAttrError , result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue DelAttrError
@@ -133,7 +133,7 @@ class Database
 		
 		host  = @host + "attribute/delete/all"
 		begin
-			result = RestClient.get host, {:params => {:name => node}}
+			result = RestClient.get host, {:params => {:rn => node}}
 			@log.debug("Node #{node} had all attributes deleted  with result  #{result.to_str}")
 			raise DelAttrError, result.to_str  unless result.to_str.scan(/ERROR/).empty?
 		rescue DelAttrError
@@ -169,7 +169,7 @@ class Database
 		#node, name and value are strings, node FQDN, attribute name, and value respectively. 
 		host  = @host + "attribute/add"
 		begin
-			result = RestClient.get host, {:params => {:name => node, :attribute => name, :value => value}}
+			result = RestClient.get host, {:params => {:rn => node, :attribute => name, :value => value}}
 			@log.debug("Node #{node} had #{name}=#{value} set  with result  #{result.to_str}")
 			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddAttrError
@@ -187,8 +187,10 @@ class Database
 		#node is a string, the FQDN of the node we want data for
 		host  = @host + "resource/show"
 		begin
-			result = RestClient.get host, {:params => {:hrn => node}}
+			result = RestClient.get host, {:params => {:rn => node}}
 			raise GetAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+			#parse string for key=value pairs
+			return result.to_str.scan(/(\S*)='(.*?)'/)
 		rescue GetAttrError
 			@log.warn("Get attribute failed with error \n #{result.to_str}")
 			raise
@@ -196,16 +198,17 @@ class Database
 			@log.fatal("Attribute retrival failed")
 			raise
 		end
-		return result.to_str.scan(/(\S*)='(.*?)'/)
 	end
 
 	def get_all_node(fqdn)
 		#Gets the all the attributes for a given fqdn e.g. "grid.orbit-lab.org"
 		host  = @host + "resource/list" 
 		begin
-			result = RestClient.get host, {:params => {:hrn => fqdn}}
+			result = RestClient.get host, {:params => {:parent => fqdn}}
 			raise GetAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+			#pull out individual node strings
 			nodes = result.scan(/<NODE(.*?)\/>/)
+			#parse each string for key=value pairs
 			return nodes.map{|arr| arr.first.scan(/(\S*)='(.*?)'/)}
 		rescue GetAttrError
 			@log.warn("Get attribute failed with error \n #{result.to_str}")
