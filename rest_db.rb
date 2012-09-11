@@ -29,6 +29,7 @@ class Tools
 		#pulls out nested tuples 
 		#TODO the ternary operation should be tuple? ?  return tuple : return insides
 		store = Array.new
+		#store if it is a tuple other wise call on each element that is an array
 		calc = lambda {|s,c| self.tuple?(c) ? s.push(c) : (c.each{|f| calc.call(s,f)} if c.class == Array)}
 		calc.call(store,current)
 		return store
@@ -37,15 +38,37 @@ class Tools
 	def self.tuples_alt(current)
 		#doing it with lambads
 		#This does not work yet. But it's something similar to this
-		test_cond = lambda {|n| Tools.tuple?(n) ? n : n.map{|x| test_cond.call(x)}}
-		foo.inject(Array.new()){|s,c| Tools.tuple?(c) ? s.push(c) : test_cond.call(c)}
+		test_cond = lambda {|n| 
+			if Tools.tuple?(n) 
+				puts "Why am I here? #{n.join(" ")}"
+				return  [n]
+			else
+			       if n.class == Array
+				       val = n.map{|x| test_cond.call(x)}.flatten(1)
+				       puts "val was #{val}"
+				       return val
+			       end
+			end
+		}
+		return [current].map{|y| test_cond.call(y)}.flatten(1).compact
 	end
 
 	def self.dig(word, current)
-		#recursivley digs nested arrays and find the containers of word should only dig into things can contain a unquie copy of word
+		#recursivley digs nested arrays for string word and find the containers of word should only dig into things can contain a unquie copy of word
 		store = Array.new
+		#Store if it is a tuple and contains w, other wise recurse  on all sub arrays
 		calc = lambda {|w,s,c| self.tuple?(c) ? (s.push(c) if self.contains?(w,c)) : (c.each{|f| calc.call(w,s,f)} if c.class == Array)}
 		calc.call(word,store,current)
+		return store.flatten
+	end
+
+	def self.dig_regexp(reg, current)
+		#TODO this is wrong.
+		#recursivley digs nested arrays for regexp and find the containers of word should only dig into things can contain a unquie copy of word
+		store = Array.new
+		#Store if it is a tuple and contains w, other wise recurse  on all sub arrays
+		calc = lambda {|r,s,c| self.tuple?(c) ? (s.push(c) if c.join(" ").match(r)) : (c.each{|f| calc.call(r,s,f)} if c.class == Array)}
+		calc.call(reg,store,current)
 		return store.flatten
 	end
 end
@@ -78,7 +101,7 @@ class Database
 			@log.debug("Attribute Deleteion failed with error \n #{result.to_str}")
 			raise
 		rescue 
-			@log.fatal("Attribute Deleteion failed ")
+			@log.fatal("Attribute Deleteion failed}")
 			raise
 		end
 		return result
@@ -109,7 +132,7 @@ class Database
 			@log.debug("Attribute Deleteion failed with error \n #{result.to_str}")
 			raise
 		rescue 
-			@log.fatal("Attribute Deleteion failed ")
+			@log.fatal("Attribute Deleteion failed")
 			raise
 		end
 		return result
