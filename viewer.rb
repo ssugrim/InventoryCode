@@ -16,21 +16,15 @@ class WebNodeData
 		@nodes = db.get_all_node(fqdn)
 
 		#all the possible headers expect name
-		@headers = @nodes.inject(Array.new){|s,c| s.push(c.map{|x| x.first})}.flatten.uniq.reject{|x| x.match(/name/)}.sort
+		@headers = @nodes.inject(Array.new){|s,c| s.push(c.map{|x| x.first})}.flatten.uniq.reject{|x| x == "name"}.sort
 
 		#all the names
-		@names = @nodes.inject(Array.new){|s,c| s.push(c.select{|x| x.first.match(/name/)}.flatten.last.strip)}
+		@names = @nodes.flatten.join(" ").scan(/(node\d+-\d+\.#{fqdn})/).flatten
 	end
 
 	def get_node_data(name)
 		#name is a string, the name of the node whose data we want
 		return Tools.tuples(@nodes.select{|x| Tools.contains?(name,x)})
-	end
-
-	def get_line(name)
-		data = Tools.tuples(@nodes.select{|x| Tools.contains?(name,x)})
-		#TODO need a function that pulls from the data and returns either a value or a white space	
-		values = @headers.map{|x| tmp = data.select{|y| y.first.match(Regexp.escape(x))}.flatten}
 	end
 
 	attr_reader :nodes, :headers, :names
@@ -67,7 +61,7 @@ if __FILE__ == $0
 		end
 
 		#Log File Location
-		$options[:logfile] = nil
+		$options[:logfile] =  STDERR
 		opts.on('-l','--logfile FILE','Where to store the log file (default: STDOUT)') do |file|
 			$options[:logfile] = file
 		end
@@ -95,10 +89,9 @@ if __FILE__ == $0
 
 	#Log Initalise
 	log = LOG.instance
-	log.info("Main: Begin Gatherer.rb - For more information check www.orbit-lab.org")
 	if $options[:logfile]
-		log.info("Main: Diverting output to #{$options[:logfile]}")
 		log.set_file($options[:logfile]) 
+		log.info("Main: Diverting output to #{$options[:logfile]}")
 	end
 	if $options[:debug]
 		log.set_debug 
@@ -108,11 +101,19 @@ if __FILE__ == $0
 	begin
 		lhn = Local_host_name.instance
 		data = WebNodeData.new(lhn.fqdn)
-		puts data.names.length
-
+		print "<HTML><BODY><TABLE BORDER = 1><TR><TD>Name</TD><TD>",data.headers.join("</TD><TD>"),"</TD></TR>\n"
+		data.names.each{|x| 
+			print "<TR><TD>#{x}</TD><TD>";
+			dummy = data.get_node_data(x);
+			datstr = data.headers.map{|y| dummy.select{|z| z[0] == y}.flatten.last}.join("</TD><TD>");
+			log.debug(datstr);
+			print datstr;
+			print "</TD></TR>\n"
+		}
+		print "</TABLE></BODY></HTML>\n"
 	ensure	
 		#Must close connection reguardless of results. 
-		puts "Main:Script done."
+		log.info("done")
 		log.close
 	end
 end
