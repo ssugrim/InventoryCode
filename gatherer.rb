@@ -1,5 +1,5 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 3.0 - Gathers information about various sytem files and then  checks them against mysql tables
+# gatherer.rb version 3.0 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
 #
 #TODO detect USRP2 via usrp scripts
 #TODO Count CPU cores?
@@ -155,7 +155,7 @@ class LsusbData
 			raise
 		end
 
-		@data = stdout.readlines.map{|str| str.match(/Bus\s(\d*)\sDevice\s(\d*):\sID\s(.*$)/).captures}
+		@data = stdout.readlines.map{|str| str.match(/ID\s*(\w*:\w*)(.*$)/).captures}
 		@log.debug("LsusbData: found #{@data.length} hits")
 	end
 	attr_reader :data
@@ -236,7 +236,7 @@ class Network
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
-		return @interfaces.each_with_index.map{|x,i| db.add_attr("if#{i}_mac",x[0]) + " " + db.add_attr("if#{i}_type",x[1]) + " " + db.add_attr("if#{i}_name",x[2])}.join(" ")
+		return @interfaces.each_with_index.map{|x,i| db.add_attr("if_mac_#{i}",x[0]) + " " + db.add_attr("if_type_#{i}",x[1]) + " " + db.add_attr("if_name_#{i}",x[2])}.join(" ")
 	end
 
 	attr_reader :interfaces
@@ -253,16 +253,16 @@ class USB
 		rawdata	=  LsusbData.new().data.reject{|x| Tools.contains?("ATEN International",x) or Tools.contains?("Linux Foundation",x) or Tools.contains?("Intel Corp. Integrated Rate Matching Hub",x) }
 		#all we care about are the device names, lsusb output should be fairly constant
 		unless rawdata.empty?
-			@devices = rawdata.map{|x| x.last.strip} 
+			@devices = Tools.tuples_alt(rawdata)
 			@log.debug("USB: Actual devices found: #{@devices.length}. They are:\n#{@devices.join("\n")}")
 		end
 	end
 
 	def update(db)
 		if @devices.nil?
-			return nil
+			return "USB: Nothing to update"
 		else
-			return @devices.each_with_index.map{|x,i| db.add_attr("usb#{i}_type",x)}.join(" ")
+			return @devices.each_with_index.map{|x,i| db.add_attr("usb_id_#{i}",x[0]) + " " + db.add_attr("usb_type_#{i}",x[1]) }.join(" ")
 		end
 	end
 end
