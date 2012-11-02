@@ -4,6 +4,8 @@
 #TODO detect USRP2 via usrp scripts
 #TODO Count CPU cores?
 #TODO Check hard disk status with Smart Tool
+#TODO redo the Network secition to extract the 8 digit id and add it as a seprate field
+#TODO perhaps search of products that are not paired with a mac 
 
 require 'optparse'
 require 'open3'
@@ -230,13 +232,20 @@ class Network
 		rawdata = macs.map{|mac| [mac,Tools.tuples(net.data.select{|arr| Tools.contains?(mac,arr)})]}
 
 		#extract out the chipset identifcation information
-		ifdata = rawdata.map{|x| [x[0],Tools.dig("product",x[1]).last, Tools.dig("vendor",x[1]).last, Tools.dig("logical name",x[1]).last]}
-		@interfaces = ifdata.map{|x| [x[0],(x[1].nil? ? String.new() : x[1].strip) + (x[2].nil? ? String.new() : x[2].strip), (x[3].nil? ? String.new() : x[3].strip)]}
+		ifdata = rawdata.map{|x| [x[0], Tools.dig("logical name",x[1]).last, Tools.dig("vendor",x[1]).last, Tools.dig("product",x[1]).last]}
+
+		#replaces nils with empty strings, and seperate the product description  and numeric identifier
+		#Note, this will throw a nil exception if it finds a mac, but not a product description with numeric identifier
+		@interfaces = ifdata.map{|x| 
+			[x[0],(x[1].nil? ? String.new() : x[1].strip), (x[2].nil? ? String.new() : x[2].strip), (x[3].nil? ? String.new() : x[3].strip).match(/(.*)\s*\[(\S{1,4}:\S{1,4})\]/).captures].flatten
+		}
 	end
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
-		return @interfaces.each_with_index.map{|x,i| db.add_attr("if_mac_#{i}",x[0]) + " " + db.add_attr("if_type_#{i}",x[1]) + " " + db.add_attr("if_name_#{i}",x[2])}.join(" ")
+		return @interfaces.each_with_index.map{|x,i| 
+			db.add_attr("if_mac_#{i}",x[0]) + " " + db.add_attr("if_name_#{i}",x[1]) + db.add_attr("if_type_#{i}",x[2] + x[3]) + " " + db.add_attr("if_id_#{i}",x[4]) 
+		}.join(" ")
 	end
 
 	attr_reader :interfaces
