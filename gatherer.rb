@@ -157,7 +157,7 @@ class LsusbData
 			raise
 		end
 
-		@data = stdout.readlines.map{|str| str.match(/ID\s*(\w*:\w*)(.*$)/).captures}
+		@data = stdout.readlines.map{|str| str.match(/\s*(\S{1,4}:\S{1,4})(.*$)/).captures}
 		@log.debug("LsusbData: found #{@data.length} hits")
 	end
 	attr_reader :data
@@ -187,6 +187,8 @@ class System
 			@cpu_tag = "i7"
 		when @cpu_type.match(/i5/)
 			@cpu_tag = "i5"
+		when @cpu_type.match(/Q8400/)
+			@cpu_tag = "c2q"
 		when @cpu_type.match(/c3|C3/)
 			@cpu_tag = "C3"
 		when @cpu_type.match(/atom|Atom|ATOM/)
@@ -234,11 +236,15 @@ class Network
 		#extract out the chipset identifcation information
 		ifdata = rawdata.map{|x| [x[0], Tools.dig("logical name",x[1]).last, Tools.dig("vendor",x[1]).last, Tools.dig("product",x[1]).last]}
 
-		#replaces nils with empty strings, and seperate the product description  and numeric identifier
+		#lambda to convert nils to empty strings and strip off white spaces
+		str_cln = lambda {|x| if x.nil? then  return String.new() else  return x.strip end }
+
+		#lambda to extract vendor/product tags as a 4 digit hex
 		#Note, this will throw a nil exception if it finds a mac, but not a product description with numeric identifier
-		@interfaces = ifdata.map{|x| 
-			[x[0],(x[1].nil? ? String.new() : x[1].strip), (x[2].nil? ? String.new() : x[2].strip), (x[3].nil? ? String.new() : x[3].strip).match(/(.*)\s*\[(\S{1,4}:\S{1,4})\]/).captures].flatten
-		}
+		get_id = lambda {|x| return x.match(/(\S{1,4}):(\S{1,4})/).captures.map{|y| sprintf("%04X",y.hex)}.join(":")}
+		
+		#apply lambdas to each interface
+		@interfaces = ifdata.map{|x| [x[0], str_cln.call(x[1]), str_cln.call(x[2]), str_cln.call(x[3]), get_id.call(x[3])]}
 	end
 
 	def update(db)
@@ -268,10 +274,19 @@ class USB
 	end
 
 	def update(db)
+		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
 		if @devices.nil?
-			return "USB: Nothing to update"
+			@log.debug("USB: Nothing to update")
+			return nil
 		else
-			return @devices.each_with_index.map{|x,i| db.add_attr("usb_id_#{i}",x[0]) + " " + db.add_attr("usb_type_#{i}",x[1]) }.join(" ")
+			#lambda to extract vendor/product tags as a 4 digit hex
+			#Note, this will throw a nil exception if it finds a mac, but not a product description with numeric identifier
+			get_id = lambda {|x| return x.match(/(\S{1,4}):(\S{1,4})/).captures.map{|y| sprintf("%04X",y.hex)}.join(":")}
+
+			#lambda to convert nils to empty strings and strip off white spaces
+			str_cln = lambda {|x| if x.nil? then  return String.new() else  return x.strip end }
+
+			return @devices.each_with_index.map{|x,i| db.add_attr("usb_id_#{i}",get_id.call(x[0])) + " " + db.add_attr("usb_type_#{i}",str_cln.call(x[1])) }.join(" ")
 		end
 	end
 end
@@ -358,17 +373,17 @@ if __FILE__ == $0
 	
 		#update system data	
 		sys = System.new()
-		log.debug(sys.update(db))
+		sys.update(db)
 		log.info("Main: System data update complete")
 
 		#update network data	
 		net = Network.new()
-		log.debug(net.update(db))
+		net.update(db)
 		log.info("Main: Network data update complete")
 
 		#update usb data	
 		usb = USB.new()
-		log.debug(usb.update(db))
+		usb.update(db)
 		log.info("Main: USB data update complete")
 
 		#then use that db helper to checkin
