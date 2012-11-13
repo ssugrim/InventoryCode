@@ -1,5 +1,7 @@
 #!/usr/bin/ruby1.8 -w
-#A rest client DB interface. Implements add, del, and get for attributes. Has a rudimentary del_all, but it's sloppy. 
+#Version 1.2
+#A rest client DB interface. Implements add, del, and get for attributes.
+# This version imposes the prefix requirement. prefix value is set when db object is instantiated.
 
 require 'log_wrap'
 require 'rest_client'
@@ -12,6 +14,10 @@ end
 
 class GetAttrError < StandardError
 end
+
+class BadAttrName < StandardError
+end
+
 
 class Tools
 	#Class of Tools  for manipulating the arrays from the DB
@@ -83,8 +89,12 @@ end
 
 class Database
 	#Container for the live object rest api
-	def initialize(host)
+	def initialize(host, prefix)
 		@log = LOG.instance
+
+		#the prefix value is what the del_all_attr method uses to filter records. It must be set, and any attributes submitted to the add method will be checked for this prefix.
+		@prefix = prefix
+
 		#By default this should be "http://internal1.orbit-lab.org:5054/inventory/"
 		@host = host
 		begin
@@ -95,11 +105,14 @@ class Database
 			@log.fatal("Cant connect to host")
 			raise
 		end
+
 	end
 
 	def del_attr(node,name)
 		#delete attributes from nodes
 		#node, name node FQDN, and attribute name respectively. 
+		#This will delete an attribute reguardless of prefix (Use with caution)
+		
 		host  = @host + "attribute/delete"
 		begin
 			result = RestClient.get host, {:params => {:rn => node, :attribute => name}}
@@ -116,58 +129,32 @@ class Database
 	end
 
 	def del_all_attr(node)
-		#delete all non-infrastructure attributes from nodes. Infrastructure attributes are defined in the config yaml file. They include:
-		#- cm_type
-		#- cm_ip
-		#- cm_port
-		#- control_switch_port_id
-		#- type
-		#- name
-		#- control_ip
-		#- x_coor
-		#- y_coor
-		#- default_disk
-		#- pxe_image
-		#- data_switch_port_id
+		#delete attributes from nodes that are prefixed with @prefix
 		#node, name node FQDN, and attribute name respectively. 
-		
-		host  = @host + "attribute/delete/all"
+		host  = @host + "attribute/delete"
 		begin
-			result = RestClient.get host, {:params => {:rn => node}}
-			@log.debug("Node #{node} had all attributes deleted  with result  #{result.to_str}")
-			raise DelAttrError, result.to_str  unless result.to_str.scan(/ERROR/).empty?
+			result = RestClient.get host, {:params => {:rn => node, :attribute => "#{@prefix}*"}}
+			@log.debug("Node #{node} had attributes deleted  with result  #{result.to_str}")
+			raise DelAttrError , result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue DelAttrError
 			@log.debug("Attribute Deleteion failed with error \n #{result.to_str}")
 			raise
 		rescue 
-			@log.fatal("Attribute Deleteion failed")
+			@log.fatal("Attribute Deleteion failed}")
 			raise
 		end
 		return result
 	end
 
-	def del_all_node(fqdn, name)
-		#removes an attribute from nodes 1..20 x 1..20
-		#name is the name of the attribute to delete
-		#TODO perhaps this should expect/accept an argument instead of globbing acroess all
-		sucess = 0
-		for x in 1..20
-			for y in 1..20
-				begin
-					del_attr("node#{x}-#{y}."  + fqdn,name)
-					sucess += 1
-				rescue DelAttrError
-					#there will be a bunch of these but in this useage case we don't care, they're already reported
-				end
-			end
-		end
-		return sucess
-	end
-
 	def add_attr(node,name,value)
 		#adds an attribute to a node
 		#node, name and value are strings, node FQDN, attribute name, and value respectively. 
+		#Name must be prefixed with @prefix other wise it's going to complain
 		host  = @host + "attribute/add"
+
+		#I won't adjust your name, but I will bark at you if you don't comply
+		raise BadAttrName, "Must prefix attribute name with #{@prefix}" if name.match(/^#{@prefix}/).nil?
+
 		begin
 			result = RestClient.get host, {:params => {:rn => node, :attribute => name, :value => value}}
 			@log.debug("Node #{node} had #{name}=#{value} set  with result  #{result.to_str}")
@@ -185,7 +172,7 @@ class Database
 	def get_attr(node)
 		#gets the attribues of a given node from the data base
 		#node is a string, the FQDN of the node we want data for
-		host  = @host + "resource/show"
+		host  = @host + "attribute/list"
 		begin
 			result = RestClient.get host, {:params => {:rn => node}}
 			raise GetAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
@@ -202,12 +189,12 @@ class Database
 
 	def get_all_node(fqdn)
 		#Gets the all the attributes for a given fqdn e.g. "grid.orbit-lab.org"
-		host  = @host + "resource/list" 
+		host  = @host + "attribute/list" 
 		begin
-			result = RestClient.get host, {:params => {:parent => fqdn}}
+			result = RestClient.get host, {:params => {:rn => "*." + fqdn}}
 			raise GetAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 			#pull out individual node strings
-			nodes = result.scan(/<NODE(.*?)\/>/)
+			nodes = result.scan(/<node(.*?)\/>/)
 			#parse each string for key=value pairs
 			return nodes.map{|arr| arr.first.scan(/(\S*)='(.*?)'/)}
 		rescue GetAttrError
