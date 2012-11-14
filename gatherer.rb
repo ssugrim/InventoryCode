@@ -1,10 +1,12 @@
 #!/usr/bin/ruby1.8 -w
 # gatherer.rb version 3.0 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
 #
+#Adding prefix support, the attribute name creation should occur at the point where the attribute is being populated (the most complete information about what the name should be is there), it is at this 
+#point that the prefix should be decided upon. Most of the time it will default to $options[:prefix], but it could be diffrent
+
 #TODO detect USRP2 via usrp scripts
 #TODO Count CPU cores?
 #TODO Check hard disk status with Smart Tool
-#TODO redo the Network secition to extract the 8 digit id and add it as a seprate field
 #TODO perhaps search of products that are not paired with a mac 
 
 require 'optparse'
@@ -31,11 +33,12 @@ end
 
 class DBhelper
 	#some inventory specfic Rest DB functions, the model here is there is a prepared database object and the update functions of each of the classes uses a helper object to write to the API
-	def initialize(host,node)
+	def initialize(host,node,prefix)
 		#host and node are strings, they are the hostname of the DB server and the fqdn of the node this code is running on respectively. 
 		@log = LOG.instance
-		@db = Database.new(host)
+		@db = Database.new(host,prefix)
 		@node = node
+		@prefix = prefix
 	end
 
 	def get_attr(name)
@@ -62,18 +65,20 @@ class DBhelper
 		begin
 			return	@db.del_all_attr(@node)
 		rescue DelAttrError => e
-			e.message.match(/nothing to delete/).nil? ? raise : @log.warn("Attributtes were already deleted, Ignoring exception")
+			e.message.match(/nothing to delete/).nil? ? raise : @log.warn("Attributes were already deleted, Ignoring exception")
 		end
 
 	end
 	
 	def add_attr(name,value)
 		#name, value are strings. name is the name of the attribute to be added, and value is it's value
+		#Names will be prefixed with @prefix
 		#Check if the attribute exists first, delete it if it does. 
+		sub_name = @prefix + name
 		if value.nil? or value.empty?
-			return @db.add_attr(@node,name,"N/A")
+			return @db.add_attr(@node,sub_name,"N/A")
 		else
-			return @db.add_attr(@node,name,value)
+			return @db.add_attr(@node,sub_name,value)
 		end
 	end
 
@@ -339,6 +344,12 @@ if __FILE__ == $0
 			$options[:dbserver] = server
 		end
 
+		#prefix
+		$options[:prefix] = "INV_"
+		opts.on('-p','--prefix TXT','Attribute PREFIX (Default = INV_)') do |prefix|
+			$options[:prefix] = prefix
+		end
+
 		# This displays the help screen, all programs are
 		# assumed to have this option.
 		opts.on( '-h', '--help', 'Display this screen' ) do
@@ -365,10 +376,10 @@ if __FILE__ == $0
 		nd = NodeData.instance
 	
 		#now that we know the fqdn, we can make a DBhleper	
-		db = DBhelper.new($options[:dbserver],nd.fqdn)
-
+		db = DBhelper.new($options[:dbserver],nd.fqdn,$options[:prefix])
+		
 		#we want to reset the node state so that it's ready to accept new data
-		log.info("Main: Dumping non-infrastructure attributes for #{nd.fqdn}")
+		log.info("Main: Dumping #{$options[:prefix]} attributes for #{nd.fqdn}")
 		db.del_all_attr()
 	
 		#update system data	
