@@ -1,5 +1,5 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 3.0 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
+# gatherer.rb version 3.1 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
 #
 #Adding prefix support, the attribute name creation should occur at the point where the attribute is being populated (the most complete information about what the name should be is there), it is at this 
 #point that the prefix should be decided upon. Most of the time it will default to $options[:prefix], but it could be diffrent
