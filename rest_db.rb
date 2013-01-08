@@ -1,7 +1,7 @@
 #!/usr/bin/ruby1.8 -w
-#Version 1.2
+#Version 1.3
 #A rest client DB interface. Implements add, del, and get for attributes.
-# This version imposes the prefix requirement. prefix value is set when db object is instantiated.
+#Adapting to the new "interface" defined at http://www.orbit-lab.org/wiki/Software/bAM/aInventory 
 
 require 'log_wrap'
 require 'rest_client'
@@ -18,6 +18,11 @@ end
 class BadAttrName < StandardError
 end
 
+class AddResError < StandardError
+end
+
+class DelResError < StandardError
+end
 
 class Tools
 	#Class of Tools  for manipulating the arrays from the DB
@@ -32,16 +37,6 @@ class Tools
 	end
 
 	def self.tuples(current)
-		#pulls out nested tuples 
-		#TODO the ternary operation should be tuple? ?  return tuple : return insides
-		store = Array.new
-		#store if it is a tuple other wise call on each element that is an array
-		calc = lambda {|s,c| self.tuple?(c) ? s.push(c) : (c.each{|f| calc.call(s,f)} if c.class == Array)}
-		calc.call(store,current)
-		return store
-	end
-
-	def self.tuples_alt(current)
 		#an Example of a proper recursive call (instead of using a side effect). 
 		test_cond = lambda {|n| 
 			if Tools.tuple?(n)
@@ -73,17 +68,7 @@ class Tools
 		#Store if it is a tuple and contains w, other wise recurse  on all sub arrays
 		calc = lambda {|w,s,c| self.tuple?(c) ? (s.push(c) if self.contains?(w,c)) : (c.each{|f| calc.call(w,s,f)} if c.class == Array)}
 		calc.call(word,store,current)
-		return store.flatten
-	end
-
-	def self.dig_regexp(reg, current)
-		#TODO this is wrong.
-		#recursivley digs nested arrays for regexp and find the containers of word should only dig into things can contain a unquie copy of word
-		store = Array.new
-		#Store if it is a tuple and contains w, other wise recurse  on all sub arrays
-		calc = lambda {|r,s,c| self.tuple?(c) ? (s.push(c) if c.join(" ").match(r)) : (c.each{|f| calc.call(r,s,f)} if c.class == Array)}
-		calc.call(reg,store,current)
-		return store.flatten
+		return store
 	end
 end
 
@@ -108,15 +93,15 @@ class Database
 
 	end
 
-	def del_attr(node,name)
-		#delete attributes from nodes
-		#node, name node FQDN, and attribute name respectively. 
+	def del_attr(resource,name)
+		#delete attributes from resources
+		#resource is the resource FQDN, and name is the attribute name
 		#This will delete an attribute reguardless of prefix (Use with caution)
 		
-		host  = @host + "attribute/delete"
+		host  = @host + "attribute_delete"
 		begin
-			result = RestClient.get host, {:params => {:rn => node, :attribute => name}}
-			@log.debug("Node #{node} had #{name} deleted  with result  #{result.to_str}")
+			result = RestClient.get host, {:params => {:name => resource, :attribute => name}}
+			@log.debug("Resource #{resource} had #{name} deleted  with result  #{result.to_str}")
 			raise DelAttrError , result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue DelAttrError
 			@log.debug("Attribute Deleteion failed with error \n #{result.to_str}")
@@ -128,13 +113,13 @@ class Database
 		return result
 	end
 
-	def del_all_attr(node)
-		#delete attributes from nodes that are prefixed with @prefix
-		#node, name node FQDN, and attribute name respectively. 
-		host  = @host + "attribute/delete"
+	def del_all_attr(resource)
+		#delete attributes from resources that are prefixed with @prefix
+		#resource, name resource FQDN, and attribute name respectively. 
+		host  = @host + "attribute_delete"
 		begin
-			result = RestClient.get host, {:params => {:rn => node, :attribute => "#{@prefix}*"}}
-			@log.debug("Node #{node} had attributes deleted  with result  #{result.to_str}")
+			result = RestClient.get host, {:params => {:name => resource, :attribute => "#{@prefix}*"}}
+			@log.debug("Resource #{resource} had attributes deleted  with result  #{result.to_str}")
 			raise DelAttrError , result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue DelAttrError
 			@log.debug("Attribute Deleteion failed with error \n #{result.to_str}")
@@ -146,18 +131,41 @@ class Database
 		return result
 	end
 
-	def add_attr(node,name,value)
-		#adds an attribute to a node
-		#node, name and value are strings, node FQDN, attribute name, and value respectively. 
+	def modify_attr(resource,name,value)
+		#modify an attribute to a resource
+		#resource, name and value are strings are the resource FQDN, attribute name, and attrbute value respectively. 
 		#Name must be prefixed with @prefix other wise it's going to complain
-		host  = @host + "attribute/add"
+		host  = @host + "attribute_modify"
 
 		#I won't adjust your name, but I will bark at you if you don't comply
 		raise BadAttrName, "Must prefix attribute name with #{@prefix}" if name.match(/^#{@prefix}/).nil?
 
 		begin
-			result = RestClient.get host, {:params => {:rn => node, :attribute => name, :value => value}}
-			@log.debug("Node #{node} had #{name}=#{value} set  with result  #{result.to_str}")
+			result = RestClient.get host, {:params => {:name => resource, :attribute => name, :value => value}}
+			@log.debug("Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
+			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+		rescue AddAttrError
+			@log.warn("Attribute modify failed with error \n #{result.to_str}")
+			raise
+		rescue
+			@log.fatal("Attribute modify failed")
+			raise
+		end
+		return result
+	end
+
+	def add_attr(resource,name,value)
+		#adds an attribute to a resource
+		#resource, name and value are strings are the resource FQDN, attribute name, and attrbute value respectively. 
+		#Name must be prefixed with @prefix other wise it's going to complain
+		host  = @host + "attribute_add"
+
+		#I won't adjust your name, but I will bark at you if you don't comply
+		raise BadAttrName, "Must prefix attribute name with #{@prefix}" if name.match(/^#{@prefix}/).nil?
+
+		begin
+			result = RestClient.get host, {:params => {:name => resource, :attribute => name, :value => value}}
+			@log.debug("Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
 			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddAttrError
 			@log.warn("Attribute addition failed with error \n #{result.to_str}")
@@ -169,12 +177,12 @@ class Database
 		return result
 	end
 
-	def get_attr(node)
-		#gets the attribues of a given node from the data base
-		#node is a string, the FQDN of the node we want data for
-		host  = @host + "attribute/list"
+	def get_attr(resource)
+		#gets the attribues of a given resource from the data base
+		#resource is a string, the FQDN of the resource we want data for
+		host  = @host + "attribute_list"
 		begin
-			result = RestClient.get host, {:params => {:rn => node}}
+			result = RestClient.get host, {:params => {:set => resource, :attribute => "*"}}
 			raise GetAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 			#parse string for key=value pairs
 			return result.to_str.scan(/(\S*)='(.*?)'/)
@@ -187,23 +195,62 @@ class Database
 		end
 	end
 
-	def get_all_node(fqdn)
-		#Gets the all the attributes for a given fqdn e.g. "grid.orbit-lab.org"
-		host  = @host + "attribute/list" 
+	def del_resource(resource)
+		#resource is a string,  the name (or partial_name) of the resouce being added
+		host  = @host + "resource_delete"
+
 		begin
-			result = RestClient.get host, {:params => {:rn => "*." + fqdn}}
-			raise GetAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
-			#pull out individual node strings
-			nodes = result.scan(/<node(.*?)\/>/)
-			#parse each string for key=value pairs
-			return nodes.map{|arr| arr.first.scan(/(\S*)='(.*?)'/)}
-		rescue GetAttrError
-			@log.warn("Get attribute failed with error \n #{result.to_str}")
+			result = RestClient.get host, {:params => {:set => resource}}
+			@log.debug("Resource #{resource} had delete  with result  #{result.to_str}")
+			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+		rescue AddResError
+			@log.warn("Resource deletion failed with error \n #{result.to_str}")
 			raise
 		rescue
-			@log.fatal("Attribute retrival failed")
+			@log.fatal("Resource deleteion failed")
 			raise
 		end
+		return result
 	end
+
+	def add_resource(resource,type)
+		#adds a resource
+		#resource is name of the resource (usually  fqdn of node + some moniker) and type (usually device)
+		host  = @host + "resource_add"
+
+		begin
+			result = RestClient.get host, {:params => {:name => resource, :type => type}}
+			@log.debug("Resource #{resource} had type=#{type} set  with result  #{result.to_str}")
+			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+		rescue AddResError
+			@log.warn("Resource addition failed with error \n #{result.to_str}")
+			raise
+		rescue
+			@log.fatal("Resource addition failed")
+			raise
+		end
+		return result
+	end
+
+	def add_relation(parent,child)
+		#adds an attribute to a resource
+		#parent is fqdn of node and child is usually parent fqdn + moniker
+		#Name must be prefixed with @prefix other wise it's going to complain
+		host  = @host + "relation_add"
+
+		begin
+			result = RestClient.get host, {:params => {:parent => parent, :child => child}}
+			@log.debug("#{parent} to #{child} relation added with  #{result.to_str}")
+			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+		rescue AddResError
+			@log.warn("Relation addition failed with error \n #{result.to_str}")
+			raise
+		rescue
+			@log.fatal("Relation addition failed")
+			raise
+		end
+		return result
+	end
+
 
 end
