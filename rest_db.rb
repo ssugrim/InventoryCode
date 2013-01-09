@@ -70,6 +70,10 @@ class Tools
 		calc.call(word,store,current)
 		return store
 	end
+
+	def self.get_last(array)
+		return array.flatten.last
+	end
 end
 
 class Database
@@ -252,5 +256,22 @@ class Database
 		return result
 	end
 
+	def list_relation(parent)
+		#parent is a string, name of the parent to check wheter children exist. Returns an array of strings which are the resource names of the children.
+		host  = @host + "resource_list"
 
+		begin
+			result = RestClient.get host, {:params => {:parent => parent}}
+			children = result.to_str.scan(/resource name='(.*?)'/).flatten
+			@log.debug("#{parent} has #{children.length} relations  #{result.to_str}")
+			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+		rescue AddResError
+			@log.warn("Relation addition failed with error \n #{result.to_str}")
+			raise
+		rescue
+			@log.fatal("Relation addition failed")
+			raise
+		end
+		return children
+	end
 end

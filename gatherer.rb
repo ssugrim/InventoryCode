@@ -32,59 +32,85 @@ end
 
 
 class DBhelper
-	#some inventory specfic Rest DB functions, the model here is there is a prepared database object and the update functions of each of the classes uses a helper object to write to the API
+	#This helper contains answers to db questions that are not necissarily part of the node information (e.g name of the invetory host). It operates on a generic "resource" which could be a node,
+	#or a device. There is no node add/delete option as the node resouce should never be deleted (it contains non-inventory information). There are add/delete device methods since those are 
+	#purely inventory information and should be under the control of this program. 
+	
 	def initialize(host,node,prefix)
 		#host and node are strings, they are the hostname of the DB server and the fqdn of the node this code is running on respectively. 
+		#prefix is a string, the prefix that will be appeneded to each added attribute. 
 		@log = LOG.instance
 		@db = Database.new(host,prefix)
-		@node = node
 		@prefix = prefix
+		@node = node
+
+		#web data cache, only created if needed.
+		@dev_count = 0
 	end
 
-	def get_attr(name)
-		#name is a string, the name of the attribute you want the value for. This will return the value of the given named attribute
-		data = @db.get_attr(@node)
+	attr_reader :node,:dev_count
+
+	def get_attr(resource,name=nil)
+		#resouce is a string, the name of the resouce that hold the attrbute. name is a string, the name of the attribute you want the value for. 
+		#This will return all the instances of the attribute name you were looking for. There may be more than
+		#one value, the caller will have to check the values for sanity. This should alway return an array, but it might be empty.
+	
+		#populate cache if empty	
+		webdata =  @db.get_attr(resource)
 
 		#look for the attribute name in the array
-		found = data.select{|arr| arr[0].include?(name)}
-
-		if found.nil?
-			return nil
-		else
-			return found.flatten[1]
-		end
+		return webdata if name.nil?
+		return Tools.dig(name,webdata)
 	end
 
-	def del_attr(name)
+	def del_attr(resource,name)
+		#resouce is a string, the name of the resouce that hold the attrbute.
 		#name is a string, the attribute name to be deleted
-		return	@db.del_attr(@node,name)
+		return	@db.del_attr(resource,name)
 	end
 
-	def del_all_attr()
-		#name is a string, the attribute name to be deleted
-		begin
-			return	@db.del_all_attr(@node)
-		rescue DelAttrError => e
-			e.message.match(/nothing to delete/).nil? ? raise : @log.warn("Attributes were already deleted, Ignoring exception")
-		end
-
+	def del_all_attr(resource)
+		#resouce is the resource to have it attrbutes dumped
+		return	@db.del_all_attr(resource)
 	end
 	
-	def add_attr(name,value)
-		#name, value are strings. name is the name of the attribute to be added, and value is it's value
+	def add_attr(resource,name,value)
+		#resource, name, and value are strings. Resouce is the name of the resouce to have the attribute added to it. Name is the name of the attribute to be added, and Value is it's value
 		#Names will be prefixed with @prefix
-		#Check if the attribute exists first, delete it if it does. 
 		sub_name = @prefix + name
 		if value.nil? or value.empty?
-			return @db.add_attr(@node,sub_name,"N/A")
+			return @db.add_attr(resource,sub_name,"N/A")
 		else
-			return @db.add_attr(@node,sub_name,value)
+			return @db.add_attr(resource,sub_name,value)
 		end
 	end
 
 	def check_in(now)
-		#now is a string, a time stamp
-		return add_attr("check_in",now)
+		#now is a string, the current time stamp. Adds the check_in feild to the node we are acting on.
+		#NOTE: the rest api, and add_attr by extension does not like the white space that comes out of the date program output. It will need to be sanitized
+		add_attr(@node,"check_in",now)
+		return true
+	end
+
+	def add_dev()
+		#adds a new device resouce, and a relation to the existing node of the form fqdn_dev_unique#. returns the name added. 
+		sub_res = @node + "_dev_#{@dev_count}"
+		@db.add_resource(sub_res,"device")
+		@db.add_relation(@node,sub_res)
+		@dev_count += 1
+		return sub_res
+	end
+
+	def del_devs()
+		#dumps all the devices beloning to a specfic node.
+		@db.del_resource(@node + "_dev_*")
+		@dev_count = 0
+		return true
+	end
+
+	def list_devs()
+		#Returns a list of devices attached to this node
+		return @db.list_relation(@node)
 	end
 end
 
@@ -92,7 +118,6 @@ class NodeData
 	include Singleton
 	#Node identification information
 	def initialize()
-		#TODO we'll need to get exectuables as params from OPT parse at some point
 		begin
 			@log  = LOG.instance
 
@@ -100,9 +125,9 @@ class NodeData
 			raise(BinaryNotFound, "hostname") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
 			@fqdn = stdout.readlines.join(" ").chomp
 
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locdate]}")
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locdate]} +'%T;%D'")
 			raise(BinaryNotFound, "Date") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-			@now = stdout.readlines.join(" ").chomp
+			@now = stdout.readlines.join.split(";").join(" ").chomp
 
 			@log.debug("Os said the fqdn was #{@fqdn}, and the date/time is #{@now}")
 			md = @fqdn.match(/node(\d+)-(\d+)./)
@@ -173,53 +198,37 @@ class System
 	def initialize()
 		@log=LOG.instance
 
+		get_data = lambda {|name, array| return Tools.dig(name,array).flatten.last.strip}
+
 		#extract the Memory Size
 		mem = LshwData.new("memory").data.select{|x| Tools.contains?("System Memory",x)}
-		@memory = Tools.dig("size",mem).last.strip
+		@memory = get_data.call("size",mem)
 
 		#extract the CPU clock speed and product string
 		#TODO figure out how to count CPU's
 		cpu = LshwData.new("cpu").data.select{|x| Tools.contains?("slot",x)}
-		@cpu_hz = Tools.dig("size",cpu).last.strip
-		cpu_vend = Tools.dig("vendor",cpu).last.strip
-		cpu_prod = Tools.dig("product",cpu).last.strip
-		cpu_ver = Tools.dig("version",cpu).last.strip
+		@cpu_hz = get_data.call("size",cpu)
+		cpu_vend = get_data.call("vendor",cpu)
+		cpu_prod = get_data.call("product",cpu)
+		cpu_ver = get_data.call("version",cpu)
 		@cpu_type = (cpu_vend.nil? ? String.new : cpu_vend) + " " + (cpu_prod.nil? ? String.new : cpu_prod) + " " + (cpu_ver.nil? ? String.new : cpu_ver)
-
-		#Simplified tag for searching purposes	
-		case 
-		when @cpu_type.match(/i7/)
-			@cpu_tag = "i7"
-		when @cpu_type.match(/i5/)
-			@cpu_tag = "i5"
-		when @cpu_type.match(/Q8400/)
-			@cpu_tag = "c2q"
-		when @cpu_type.match(/c3|C3/)
-			@cpu_tag = "C3"
-		when @cpu_type.match(/atom|Atom|ATOM/)
-			@cpu_tag = "Atom"
-		when @cpu_type.match(/AMD|amd/)
-			@cpu_tag = "AMD"
-		else
-			@cpu_tag = "Unknown"
-		end
 
 		#extract the disk data
 		disk = LshwData.new("disk")
-		@hd_size = Tools.dig("size",disk.data).last.strip
-		@hd_sn = Tools.dig("serial",disk.data).last.strip
+		@hd_size = get_data.call("size",disk.data)
+		@hd_sn = get_data.call("serial",disk.data)
 
 		#extract the motherboard serial number 
 		@mb_sn = nil
 		mb = LshwData.new("system")
-		uuid_str = Tools.dig("uuid",mb.data).last
+		uuid_str = get_data.call("uuid",mb.data)
 		@mb_sn = uuid_str.match(/uuid=(.*$)/).captures.first.strip unless uuid_str == nil
 	end
 
 	def update(db)
-		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
-		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn","cpu_tag"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn,@cpu_tag])
-		return  data.map{|arr| db.add_attr(arr[0],arr[1])}.join(" ")
+		#db is a DBhelper object that is used to push updated values of the data to the Rest DB
+		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn])
+		return  data.map{|arr| db.add_attr(db.node,arr[0],arr[1])}.join(" ")
 
 	end
 
@@ -231,15 +240,17 @@ class Network
 	def initialize()
 		@log=LOG.instance
 
+		get_data = lambda {|name, array| return Tools.dig(name,array).flatten.last.strip}
+
 		net = LshwData.new("network")
 		#collect mac address by diging the serial keword then rejecting the actual word serial (since we're flattening the tuples).
-		macs =  Tools.dig("serial",net.data).reject{|x| x.match(/serial/)}.map{|x| x.strip}
+		macs =  Tools.dig("serial",net.data).flatten.reject{|x| x.match(/serial/)}.map{|x| x.strip}
 
 		#pair the mac with the array of extracted data it came from
 		rawdata = macs.map{|mac| [mac,Tools.tuples(net.data.select{|arr| Tools.contains?(mac,arr)})]}
 
 		#extract out the chipset identifcation information
-		ifdata = rawdata.map{|x| [x[0], Tools.dig("logical name",x[1]).last, Tools.dig("vendor",x[1]).last, Tools.dig("product",x[1]).last]}
+		ifdata = rawdata.map{|x| [x[0], get_data.call("logical name",x[1]), get_data.call("vendor",x[1]), get_data.call("product",x[1])]}
 
 		#lambda to convert nils to empty strings and strip off white spaces
 		str_cln = lambda {|x| if x.nil? then  return String.new() else  return x.strip end }
@@ -254,8 +265,9 @@ class Network
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
-		return @interfaces.each_with_index.map{|x,i| 
-			db.add_attr("if_mac_#{i}",x[0]) + " " + db.add_attr("if_name_#{i}",x[1]) + db.add_attr("if_type_#{i}",x[2] + x[3]) + " " + db.add_attr("if_id_#{i}",x[4]) 
+		return @interfaces.map{|x| 
+			dev_name = db.add_dev()
+			"Device added #{dev_name)}" + db.add_attr(dev_name,"if_mac",x[0]) + " " + db.add_attr(dev_name,"if_name",x[1]) + db.add_attr(dev_name, "if_type",x[2] + x[3]) + " " + db.add_attr(dev_name,"dev_id",x[4]) 
 		}.join(" ")
 	end
 
