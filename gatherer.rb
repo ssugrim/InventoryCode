@@ -267,7 +267,11 @@ class Network
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
 		return @interfaces.map{|x| 
 			dev_name = db.add_dev()
-			"Device added #{dev_name)}" + db.add_attr(dev_name,"if_mac",x[0]) + " " + db.add_attr(dev_name,"if_name",x[1]) + db.add_attr(dev_name, "if_type",x[2] + x[3]) + " " + db.add_attr(dev_name,"dev_id",x[4]) 
+			s1 = db.add_attr(dev_name,"if_mac",x[0])
+		       	s2 = db.add_attr(dev_name,"if_name",x[1])
+			s3 = db.add_attr(dev_name,"if_type",x[2] + x[3])
+			s4 = db.add_attr(dev_name,"dev_id",x[4]) 
+			["Dev added #{dev_name}",s1,s2,s3,s4].join(" ")
 		}.join(" ")
 	end
 
