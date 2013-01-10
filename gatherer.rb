@@ -71,7 +71,15 @@ class DBhelper
 
 	def del_all_attr(resource)
 		#resouce is the resource to have it attrbutes dumped
-		return	@db.del_all_attr(resource)
+		begin
+			return @db.del_all_attr(resource)
+		rescue DelAttrError => e
+			if e.message.match(/No resource\/attribute match/).nil?
+				raise
+			else
+				@log.debug("Attributes already deleted, proceeding")
+			end
+		end
 	end
 	
 	def add_attr(resource,name,value)
