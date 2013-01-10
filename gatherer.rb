@@ -1,5 +1,5 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 3.1 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
+# gatherer.rb version 3.5 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
 #
 #Adding prefix support, the attribute name creation should occur at the point where the attribute is being populated (the most complete information about what the name should be is there), it is at this 
 #point that the prefix should be decided upon. Most of the time it will default to $options[:prefix], but it could be diffrent
@@ -193,6 +193,25 @@ class LsusbData
 	attr_reader :data
 end
 
+class BenchData
+	def initialize()
+	#Returns an Array of lines from lsusb output
+		@log  = LOG.instance
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locbench]} --test=cpu --cpu-max-prime=2000 run")
+			raise(BinaryNotFound, "sysbench") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+			@log.fatal("Component.lshw_arr: called by #{caller}")
+			raise
+		end
+
+		@data = stdout.readlines.join.match(/execution time \(avg\/stddev\)\:\s+(\d+.\d+)\//).captures.first
+		@log.debug("BenchMark: value #{@data}")
+	end
+	attr_reader :data
+end
+
 class System 
 	#container class for System Data: Motherboard, CPU, Memory, Disk
 	def initialize()
@@ -213,6 +232,8 @@ class System
 		cpu_ver = get_data.call("version",cpu)
 		@cpu_type = (cpu_vend.nil? ? String.new : cpu_vend) + " " + (cpu_prod.nil? ? String.new : cpu_prod) + " " + (cpu_ver.nil? ? String.new : cpu_ver)
 
+		@cpu_bench =  BenchData.new.data
+
 		#extract the disk data
 		disk = LshwData.new("disk")
 		@hd_size = get_data.call("size",disk.data)
@@ -227,7 +248,7 @@ class System
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DB
-		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn])
+		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn","cpu_bench"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn,@cpu_bench])
 		return  data.map{|arr| db.add_attr(db.node,arr[0],arr[1])}.join(" ")
 
 	end
@@ -269,7 +290,7 @@ class Network
 			dev_name = db.add_dev()
 			s1 = db.add_attr(dev_name,"if_mac",x[0])
 		       	s2 = db.add_attr(dev_name,"if_name",x[1])
-			s3 = db.add_attr(dev_name,"if_type",x[2] + x[3])
+			s3 = db.add_attr(dev_name,"dev_type",x[2] + x[3])
 			s4 = db.add_attr(dev_name,"dev_id",x[4]) 
 			["Dev added #{dev_name}",s1,s2,s3,s4].join(" ")
 		}.join(" ")
@@ -289,7 +310,7 @@ class USB
 		rawdata	=  LsusbData.new().data.reject{|x| Tools.contains?("ATEN International",x) or Tools.contains?("Linux Foundation",x) or Tools.contains?("Intel Corp. Integrated Rate Matching Hub",x) }
 		#all we care about are the device names, lsusb output should be fairly constant
 		unless rawdata.empty?
-			@devices = Tools.tuples_alt(rawdata)
+			@devices = Tools.tuples(rawdata)
 			@log.debug("USB: Actual devices found: #{@devices.length}. They are:\n#{@devices.join("\n")}")
 		end
 	end
@@ -307,7 +328,12 @@ class USB
 			#lambda to convert nils to empty strings and strip off white spaces
 			str_cln = lambda {|x| if x.nil? then  return String.new() else  return x.strip end }
 
-			return @devices.each_with_index.map{|x,i| db.add_attr("usb_id_#{i}",get_id.call(x[0])) + " " + db.add_attr("usb_type_#{i}",str_cln.call(x[1])) }.join(" ")
+			return @devices.map{|x| 
+				dev_name = db.add_dev()
+				s1 = db.add_attr(dev_name,"dev_type",str_cln.call(x[1]))
+				s2 = db.add_attr(dev_name,"dev_id",get_id.call(x[0]))
+				["Dev added #{dev_name}",s1,s2].join(" ")
+			}
 		end
 	end
 end
@@ -337,9 +363,15 @@ if __FILE__ == $0
 		end
 
 		#LSUSB location
-		$options[:loclsusb] = '/usr/sbin/lsusb'
+		$options[:loclsusb] = '/usr/bin/lsusb'
 		opts.on('-U','--lsusb FILE','location of lsusb executeable (default: /usr/sbin/lsusb)') do |file|
 			$options[:loclsusb] = file
+		end
+
+		#Sysbench location
+		$options[:locbench] = '/usr/bin/sysbench'
+		opts.on('-b','--bench FILE','location of sysbench executeable (default: /usr/bin/sysbench)') do |file|
+			$options[:locbench] = file
 		end
 
 		#HOSTNAME location
@@ -396,7 +428,8 @@ if __FILE__ == $0
 		
 		#we want to reset the node state so that it's ready to accept new data
 		log.info("Main: Dumping #{$options[:prefix]} attributes for #{nd.fqdn}")
-		db.del_all_attr()
+		db.del_all_attr(db.node)
+		db.del_devs()
 	
 		#update system data	
 		sys = System.new()
