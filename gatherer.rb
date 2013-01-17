@@ -269,7 +269,10 @@ class Network
 	def initialize()
 		@log=LOG.instance
 
-		get_data = lambda {|name, array| return Tools.dig(name,array).flatten.last.strip}
+		get_data = lambda {|name, array| 
+			data =  Tools.dig(name,array).flatten.last
+			data.nil? ? nil : data.strip
+		}
 
 		net = LshwData.new("network")
 		#collect mac address by diging the serial keword then rejecting the actual word serial (since we're flattening the tuples).
@@ -279,7 +282,15 @@ class Network
 		rawdata = macs.map{|mac| [mac,Tools.tuples(net.data.select{|arr| Tools.contains?(mac,arr)})]}
 
 		#extract out the chipset identifcation information
-		ifdata = rawdata.map{|x| [x[0], get_data.call("logical name",x[1]), get_data.call("vendor",x[1]), get_data.call("product",x[1])]}
+		ifdata = rawdata.map{|x| 
+			prod_data = get_data.call("product",x[1])
+			if prod_data.nil?
+				@log.debug("Network.initialize: Couldn't get product id for #{x[0]}, dropping it")
+				nil
+			else
+				[x[0], get_data.call("logical name",x[1]), get_data.call("vendor",x[1]), prod_data]
+			end
+		}.compact
 
 		#lambda to convert nils to empty strings and strip off white spaces
 		str_cln = lambda {|x| if x.nil? then  return String.new() else  return x.strip end }
@@ -436,8 +447,8 @@ if __FILE__ == $0
 		
 		#we want to reset the node state so that it's ready to accept new data
 		log.info("Main: Dumping #{$options[:prefix]} attributes for #{nd.fqdn}")
-		db.del_all_attr(db.node)
 		db.del_devs()
+		db.del_all_attr(db.node)
 	
 		#update system data	
 		sys = System.new()
