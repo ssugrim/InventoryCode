@@ -201,6 +201,64 @@ class LsusbData
 	attr_reader :data
 end
 
+class PingData
+	def initialize()
+	#Returns the average ping time from the interface, This should be wrapped in a begin block that discards any errors, as it may be very prone to mistakes.
+		@log  = LOG.instance
+		#get the current eth1 ip
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]} eth1")
+			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+			@log.fatal("Component.lshw_arr: called by #{caller}")
+			raise
+		end
+		eth1_ip = stdout.readlines.join.match(/inet\saddr:(\d+).(\d+).(\d+).(\d+)/).captures
+		@log.debug("PingData: eth1 address #{eth1_ip.join(".")}")
+
+		#set the eth0 ip, if the last step fails we'll generate an exception here. eth0's ip should be eth1's ip with the second quad incremented by 10
+		eth0_ip = Array.new(4){|i| i == 1 ? eth1_ip[i].to_i + 10 : eth1_ip[i]}
+
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]} eth0 #{eth0_ip.join(".")} netmask 255.255.0.0")
+			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+			@log.fatal("Component.lshw_arr: called by #{caller}")
+			raise
+		end
+		@log.debug("PingData: eth0 address #{eth0_ip.join(".")}")
+		
+		#compute the firewalls address from mine. It should match in the first 2 quads and be 0.1 in the last two
+		server = Array.new(4){|i| 
+			if i == 2				
+				0
+			elsif i == 3
+				1
+			else
+				eth0_ip[i]
+			end
+		}
+		@log.debug("PingData: server address #{server.join(".")}")
+	
+		#the actual ping. regex out the average, that's our data
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locping]} -c 10 #{server.join(".")}")
+			#TODO more carefull analysis of the stderr for other error types
+			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
+			@log.fatal("Component.lshw_arr: called by #{caller}")
+			raise
+		end
+
+		@data = stdout.readlines.join.match(/min\/avg\/max\/mdev\s=\s\d+.\d+\/(\d+.\d+)\/\d+.\d+\/\d+.\d+/).captures.join
+		@log.debug("PingData: Average ping time was #{data}")
+	end
+	attr_reader :data
+end
+
 class BenchData
 	def initialize()
 	#Returns an Array of lines from lsusb output
@@ -225,7 +283,7 @@ class System
 	def initialize()
 		@log=LOG.instance
 
-		get_data = lambda {|name, array| return Tools.dig(name,array).flatten.last.strip}
+		get_data = lambda {|name, array| dat = Tools.dig(name,array).flatten.last; return dat.nil? ? nil : dat.strip}
 
 		#extract the Memory Size
 		mem = LshwData.new("memory").data.select{|x| Tools.contains?("System Memory",x)}
@@ -248,15 +306,22 @@ class System
 		@hd_sn = get_data.call("serial",disk.data)
 
 		#extract the motherboard serial number 
-		@mb_sn = nil
 		mb = LshwData.new("system")
 		uuid_str = get_data.call("uuid",mb.data)
-		@mb_sn = uuid_str.match(/uuid=(.*$)/).captures.first.strip unless uuid_str == nil
+		@mb_sn = uuid_str.nil? ? nil : uuid_str.match(/uuid=(.*$)/).captures.first.strip 
+
+		#try to ping the fire wall, but don't worry about if it fails
+		begin
+			@fw_ping = PingData.new.data
+		rescue
+			@log.debug("System.new: PingData encountered an error")
+			@fw_ping = "Unable to get data"
+		end
 	end
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DB
-		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn","cpu_bench"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn,@cpu_bench])
+		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn","cpu_bench","fw_ping"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn,@cpu_bench,@fw_ping])
 		return  data.map{|arr| db.add_attr(db.node,arr[0],arr[1])}.join(" ")
 
 	end
@@ -391,6 +456,18 @@ if __FILE__ == $0
 		$options[:locbench] = '/usr/bin/sysbench'
 		opts.on('-b','--bench FILE','location of sysbench executeable (default: /usr/bin/sysbench)') do |file|
 			$options[:locbench] = file
+		end
+
+		#ifconfig location
+		$options[:locifconfig] = '/sbin/ifconfig'
+		opts.on('-I','--ifcon FILE','location of ifconfig (default: /sbin/ifconfig)') do |file|
+			$options[:locifconfig] = file
+		end
+
+		#ping location
+		$options[:locping] = '/bin/ping'
+		opts.on('-P','--ping FILE','location of ping (default: /bin/ping)') do |file|
+			$options[:locping] = file
 		end
 
 		#HOSTNAME location
