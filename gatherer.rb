@@ -28,6 +28,20 @@ class  NoLocidError < StandardError
 end
 
 class BinaryNotFound < StandardError
+	attr_accessor :cmd
+	def initialize(message = nil, cmd = nil)
+		super(message)
+		self.cmd = cmd
+	end
+end
+
+class ExecError < StandardError
+	attr_accessor :error,:cmd
+	def initialize(message = nil, cmd = nil, error = nil)
+		super(message)
+		self.error = error
+		self.cmd = cmd
+	end
 end
 
 class InterfaceDoesNotExist < StandardError
@@ -35,6 +49,33 @@ class InterfaceDoesNotExist < StandardError
 	def initialize(message = nil, name = nil)
 		super(message)
 		self.name = name
+	end
+end
+
+class Tools
+	#a tool class of common functions, net necissarly beloning to any other class
+	@@log=LOG.instance
+	def self.run_cmd(cmd)
+		begin
+			#run command with popen3
+			stdin, stdout, stderr = Open3.popen3(cmd)
+			#collect any stderr
+			error = stderr.readlines.join(" ")
+
+			#raise an exception if the binary is not found 
+			raise BinaryNotFound.new("#{cmd} failed",cmd) unless error.scan("No such file or directory").empty?
+
+			#raise exception if there is any error output
+			raise ExecError.new("Exec Error",cmd, error) unless error.empty?
+		rescue BinaryNotFound => e
+			@@log.fatal("Tools.run_cmd: #{e.class} #{e.message} \n #{e.cmd}")
+			@@log.fatal("Tools.run_cmd: called by #{e.caller}")
+			raise
+		rescue ExecError => e
+			@@log.fatal("Tools.run_cmd: Execution error\n#{e.error} \n in command \n #{e.cmd}") 
+			raise
+		end
+		return stdout
 	end
 end
 
@@ -130,28 +171,19 @@ class DBhelper
 	end
 end
 
+
 class NodeData
 	include Singleton
 	#Node identification information
 	def initialize()
 		begin
+			#collect  System data
 			@log  = LOG.instance
-
-			stdin, stdout, stderr = Open3.popen3("#{$options[:lochostname]} -f")
-			raise(BinaryNotFound, "hostname") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-			@fqdn = stdout.readlines.join(" ").chomp
-
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locdate]} +'%T;%D'")
-			raise(BinaryNotFound, "Date") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-			@now = stdout.readlines.join.split(";").join(" ").chomp
-
+			@fqdn = Tools.run_cmd("#{$options[:lochostname]} -f").readlines.join(" ").chomp
+			@now = Tools.run_cmd( "#{$options[:locdate]} +'%T;%D'").readlines.join.split(";").join(" ").chomp
 			@log.debug("Os said the fqdn was #{@fqdn}, and the date/time is #{@now}")
 			md = @fqdn.match(/node(\d+)-(\d+)./)
 			@x,@y = md.captures unless md.nil?
-		rescue BinaryNotFound => e
-			@log.fatal("NodeData.init: #{e.class} #{e.message}")
-			@log.fatal("NodeData.init: called by #{caller}")
-			raise
 		rescue
 			@log.fatal("Something broke while getting system info")
 			raise
@@ -174,16 +206,8 @@ class LshwData
 		#It checks if an element is lenght 2 and does not contain arrays. Passing this check will cause the element to be stored, failing will cause a recursive call.
 		tuples = lambda {|store,current| current.length == 2 and current.select{|dummy| dummy.class == Array}.empty? ? store.push(current) : current.each{|future| tuples.call(store,future)}}
 
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:loclshw]} -numeric -c #{@flag}")
-			raise(BinaryNotFound, "lshw") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("Lshwdata.init: #{e.class} #{e.message}")
-			@log.fatal("Lshwdata.init: called by #{caller}")
-			raise
-		end
 
-		@data = stdout.readlines.join(" ").split(/\*-/).map{|str| str.scan(/(\S.*?):(.*$)/)}.select{|arr| !arr.empty?}
+		@data = Tools.run_cmd("#{$options[:loclshw]} -numeric -c #{@flag}").readlines.join(" ").split(/\*-/).map{|str| str.scan(/(\S.*?):(.*$)/)}.select{|arr| !arr.empty?}
 		@log.debug("LshwData: found #{@data.length} hits for flag #{@flag}")
 	end
 
@@ -194,16 +218,7 @@ class LsusbData
 	def initialize()
 	#Returns an Array of lines from lsusb output
 		@log  = LOG.instance
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:loclsusb]}")
-			raise(BinaryNotFound, "lsusb") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("LsusbData.init: #{e.class} #{e.message}")
-			@log.fatal("LsusbData.init: called by #{caller}")
-			raise
-		end
-
-		@data = stdout.readlines.map{|str| str.match(/\s*(\S{1,4}:\S{1,4})(.*$)/).captures}
+		@data = Tools.run_cmd("#{$options[:loclsusb]}").readlines.map{|str| str.match(/\s*(\S{1,4}:\S{1,4})(.*$)/).captures}
 		@log.debug("LsusbData: found #{@data.length} hits")
 	end
 	attr_reader :data
@@ -220,15 +235,7 @@ class Interface
 		@netmask = nil
 
 		#check if the interface exists
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]} -a")
-			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("Interface.init: #{e.class} #{e.message}")
-			@log.fatal("Interface.init: called by #{caller}")
-			raise
-		end
-		raise InterfaceDoesNotExist.new("Interface does not exits",name) if stdout.readlines.join.scan(name).empty?
+		raise InterfaceDoesNotExist.new("Interface does not exits",name) if Tools.run_cmd("#{$options[:locifconfig]} -a").readlines.join.scan(name).empty?
 		check_up()
 	end
 
@@ -239,16 +246,8 @@ class Interface
 		@up = false
 		@ip = nil
 		@netmask = nil
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]}")
-			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("Interface.init: #{e.class} #{e.message}")
-			@log.fatal("Interface.init: called by #{caller}")
-			raise
-		end
 
-		ifcondata = stdout.readlines.join
+		ifcondata = Tools.run_cmd("#{$options[:locifconfig]}").readlines.join
 		@up = true unless ifcondata.scan(@name).empty?
 		@ip,@netmask = ifcondata.match(/#{Regexp.escape(@name)}.*?inet addr:(\d+.\d+.\d+.\d+).*?Mask:(\d+.\d+.\d+.\d+)/m).captures if @up
 		return @up
@@ -256,14 +255,7 @@ class Interface
 
 	def set_ip(ip,netmask)
 		#set the ip address and netmask, should bring the interface up if it is down.
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]} #{@name} #{ip} netmask #{netmask}")
-			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("Interface.init: #{e.class} #{e.message}")
-			@log.fatal("Interface.init: called by #{caller}")
-			raise
-		end
+		Tools.run_cmd("#{$options[:locifconfig]} #{@name} #{ip} netmask #{netmask}")
 		check_up()
 	end
 end
@@ -309,17 +301,8 @@ class PingData
 		@log.debug("PingData: server address #{server.join(".")}")
 	
 		#the actual ping. regex out the average, that's our data
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locping]} -c 10 #{server.join(".")}")
-			#TODO more carefull analysis of the stderr for other error types
-			raise(BinaryNotFound, "ping") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("PingData.init: #{e.class} #{e.message}")
-			@log.fatal("PingData.init: called by #{caller}")
-			raise
-		end
 
-		@data = stdout.readlines.join.match(/min\/avg\/max\/mdev\s=\s\d+.\d+\/(\d+.\d+)\/\d+.\d+\/\d+.\d+/).captures.join
+		@data = Tools.run_cmd("#{$options[:locping]} -c 10 #{server.join(".")}").readlines.join.match(/min\/avg\/max\/mdev\s=\s\d+.\d+\/(\d+.\d+)\/\d+.\d+\/\d+.\d+/).captures.join
 		@log.debug("PingData: Average ping time was #{data}")
 	end
 	attr_reader :data
@@ -340,18 +323,9 @@ class USRPData
 			@log.warn("Was not able to find interface #{e.name}")
 		end
 
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locuhd]}")
-			#TODO more carefull analysis of the stderr for other error types
-			raise(BinaryNotFound, "uhd_usrp_probe") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("USRPdata: #{e.class} #{e.message}")
-			@log.fatal("USRPdata: called by #{caller}")
-			raise
-		end
 
 		data = nil
-		data = stdout.readlines.join("\n")
+		data = Tools.run_cmd("#{$options[:locuhd]}").readlines.join("\n")
 		unless data.nil?
 			@type = data.scan(/Device:\s+(.*)$/)
 			@serial = data.scan(/serial:\s+(.*)$/)
@@ -366,16 +340,8 @@ class BenchData
 	def initialize()
 		#Times the computation for the first 2000 primes. A Benchmark to compare CPU's
 		@log  = LOG.instance
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locbench]} --test=cpu --cpu-max-prime=2000 run")
-			raise(BinaryNotFound, "sysbench") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("BenchData.init: #{e.class} #{e.message}")
-			@log.fatal("BenchData.init: called by #{caller}")
-			raise
-		end
 
-		@data = stdout.readlines.join.match(/execution time \(avg\/stddev\)\:\s+(\d+.\d+)\//).captures.first
+		@data = Tools.run_cmd("#{$options[:locbench]} --test=cpu --cpu-max-prime=2000 run").readlines.join.match(/execution time \(avg\/stddev\)\:\s+(\d+.\d+)\//).captures.first
 		@log.debug("BenchMark: value #{@data}")
 	end
 	attr_reader :data
@@ -524,6 +490,13 @@ class USB
 		end
 	end
 end
+
+class USRP
+	def initialize()
+		@log=LOG.instance
+	end
+end
+
 
 if __FILE__ == $0
 	$options = Hash.new()
