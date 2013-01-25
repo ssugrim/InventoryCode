@@ -30,6 +30,14 @@ end
 class BinaryNotFound < StandardError
 end
 
+class InterfaceDoesNotExist < StandardError
+	attr_accessor :name
+	def initialize(message = nil, name = nil)
+		super(message)
+		self.name = name
+	end
+end
+
 
 class DBhelper
 	#This helper contains answers to db questions that are not necissarily part of the node information (e.g name of the invetory host). It operates on a generic "resource" which could be a node,
@@ -141,8 +149,8 @@ class NodeData
 			md = @fqdn.match(/node(\d+)-(\d+)./)
 			@x,@y = md.captures unless md.nil?
 		rescue BinaryNotFound => e
-			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
-			@log.fatal("Component.lshw_arr: called by #{caller}")
+			@log.fatal("NodeData.init: #{e.class} #{e.message}")
+			@log.fatal("NodeData.init: called by #{caller}")
 			raise
 		rescue
 			@log.fatal("Something broke while getting system info")
@@ -170,8 +178,8 @@ class LshwData
 			stdin, stdout, stderr = Open3.popen3("#{$options[:loclshw]} -numeric -c #{@flag}")
 			raise(BinaryNotFound, "lshw") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
 		rescue BinaryNotFound => e
-			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
-			@log.fatal("Component.lshw_arr: called by #{caller}")
+			@log.fatal("Lshwdata.init: #{e.class} #{e.message}")
+			@log.fatal("Lshwdata.init: called by #{caller}")
 			raise
 		end
 
@@ -190,8 +198,8 @@ class LsusbData
 			stdin, stdout, stderr = Open3.popen3("#{$options[:loclsusb]}")
 			raise(BinaryNotFound, "lsusb") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
 		rescue BinaryNotFound => e
-			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
-			@log.fatal("Component.lshw_arr: called by #{caller}")
+			@log.fatal("LsusbData.init: #{e.class} #{e.message}")
+			@log.fatal("LsusbData.init: called by #{caller}")
 			raise
 		end
 
@@ -201,43 +209,101 @@ class LsusbData
 	attr_reader :data
 end
 
+class Interface
+	def initialize(name)
+		#name, ip and netmask are string, the name of the intefrace refers to the expected enmeration name (usually "eth" something). The ip and netmask 
+		#should be in dot quad notation, but as a string. Up is a bool, true if the interface is determined to be up
+		@log  = LOG.instance
+		@name = name
+		@up = false
+		@ip = nil
+		@netmask = nil
+
+		#check if the interface exists
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]} -a")
+			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("Interface.init: #{e.class} #{e.message}")
+			@log.fatal("Interface.init: called by #{caller}")
+			raise
+		end
+		raise InterfaceDoesNotExist.new("Interface does not exits",name) if stdout.readlines.join.scan(name).empty?
+		check_up()
+	end
+
+	attr_reader :name,:up,:ip,:netmask
+
+	def check_up()
+		#check if interface is up, or and if it has an address
+		@up = false
+		@ip = nil
+		@netmask = nil
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]}")
+			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("Interface.init: #{e.class} #{e.message}")
+			@log.fatal("Interface.init: called by #{caller}")
+			raise
+		end
+
+		ifcondata = stdout.readlines.join
+		@up = true unless ifcondata.scan(@name).empty?
+		@ip,@netmask = ifcondata.match(/#{Regexp.escape(@name)}.*?inet addr:(\d+.\d+.\d+.\d+).*?Mask:(\d+.\d+.\d+.\d+)/m).captures if @up
+		return @up
+	end
+
+	def set_ip(ip,netmask)
+		#set the ip address and netmask, should bring the interface up if it is down.
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]} #{@name} #{ip} netmask #{netmask}")
+			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("Interface.init: #{e.class} #{e.message}")
+			@log.fatal("Interface.init: called by #{caller}")
+			raise
+		end
+		check_up()
+	end
+end
+
 class PingData
-	def initialize()
 	#Returns the average ping time from the interface, This should be wrapped in a begin block that discards any errors, as it may be very prone to mistakes.
+	def initialize()
 		@log  = LOG.instance
 		#get the current eth1 ip
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]} eth1")
-			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
-			@log.fatal("Component.lshw_arr: called by #{caller}")
-			raise
-		end
-		eth1_ip = stdout.readlines.join.match(/inet\saddr:(\d+).(\d+).(\d+).(\d+)/).captures
+		if1 = Interface.new("eth1")	
+		eth1_ip = if1.ip.match(/(\d+).(\d+).(\d+).(\d+)/).captures
 		@log.debug("PingData: eth1 address #{eth1_ip.join(".")}")
 
-		#set the eth0 ip, if the last step fails we'll generate an exception here. eth0's ip should be eth1's ip with the second quad incremented by 10
-		eth0_ip = Array.new(4){|i| i == 1 ? eth1_ip[i].to_i + 10 : eth1_ip[i]}
+		#set the eth0 ip, eth0's ip should be eth1's ip with the second quad incremented by 10 unless it's over 40, then increment by 1
+		eth0_ip = Array.new(4){|i|
+			if i == 1 
+				if eth1_ip[i].to_i >= 40
+					eth1_ip[i].to_i + 1
+				else
+					eth1_ip[i].to_i + 10
+				end
+			else
+				eth1_ip[i].to_i
+			end
+		}
+		if0 = Interface.new("eth0")
+		if0.set_ip(eth0_ip.join("."),"255.255.0.0")
 
-		begin
-			stdin, stdout, stderr = Open3.popen3("#{$options[:locifconfig]} eth0 #{eth0_ip.join(".")} netmask 255.255.0.0")
-			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
-		rescue BinaryNotFound => e
-			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
-			@log.fatal("Component.lshw_arr: called by #{caller}")
-			raise
-		end
+
 		@log.debug("PingData: eth0 address #{eth0_ip.join(".")}")
 		
 		#compute the firewalls address from mine. It should match in the first 2 quads and be 0.1 in the last two
 		server = Array.new(4){|i| 
-			if i == 2				
+			case i
+			when 2
 				0
-			elsif i == 3
+			when 3
 				1
 			else
-				eth0_ip[i]
+				eth0_ip[i].to_i
 			end
 		}
 		@log.debug("PingData: server address #{server.join(".")}")
@@ -246,10 +312,10 @@ class PingData
 		begin
 			stdin, stdout, stderr = Open3.popen3("#{$options[:locping]} -c 10 #{server.join(".")}")
 			#TODO more carefull analysis of the stderr for other error types
-			raise(BinaryNotFound, "ifconfig") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+			raise(BinaryNotFound, "ping") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
 		rescue BinaryNotFound => e
-			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
-			@log.fatal("Component.lshw_arr: called by #{caller}")
+			@log.fatal("PingData.init: #{e.class} #{e.message}")
+			@log.fatal("PingData.init: called by #{caller}")
 			raise
 		end
 
@@ -259,16 +325,53 @@ class PingData
 	attr_reader :data
 end
 
-class BenchData
+class USRPData
+	#Data about attached USRP's collected from the UHD
 	def initialize()
-	#Returns an Array of lines from lsusb output
+		@log = LOG.instance
+		@type =  nil
+		@serial = nil
+		@daughters = nil
+		if2 = nil
+		begin
+			if2 = Interface.new("eth2")
+			#TODO set proper ip for usrp2
+		rescue InterfaceDoesNotExist => e
+			@log.warn("Was not able to find interface #{e.name}")
+		end
+
+		begin
+			stdin, stdout, stderr = Open3.popen3("#{$options[:locuhd]}")
+			#TODO more carefull analysis of the stderr for other error types
+			raise(BinaryNotFound, "uhd_usrp_probe") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
+		rescue BinaryNotFound => e
+			@log.fatal("USRPdata: #{e.class} #{e.message}")
+			@log.fatal("USRPdata: called by #{caller}")
+			raise
+		end
+
+		data = nil
+		data = stdout.readlines.join("\n")
+		unless data.nil?
+			@type = data.scan(/Device:\s+(.*)$/)
+			@serial = data.scan(/serial:\s+(.*)$/)
+			@daughters = data.scan(/ID:\s+(.*)$/)
+		end
+	end
+	attr_reader :type,:serial,:daughters
+end
+
+class BenchData
+	#benchmark data
+	def initialize()
+		#Times the computation for the first 2000 primes. A Benchmark to compare CPU's
 		@log  = LOG.instance
 		begin
 			stdin, stdout, stderr = Open3.popen3("#{$options[:locbench]} --test=cpu --cpu-max-prime=2000 run")
 			raise(BinaryNotFound, "sysbench") unless stderr.readlines.join(" ").scan(/No such file or directory/).empty?
 		rescue BinaryNotFound => e
-			@log.fatal("Component.lshw_arr: #{e.class} #{e.message}")
-			@log.fatal("Component.lshw_arr: called by #{caller}")
+			@log.fatal("BenchData.init: #{e.class} #{e.message}")
+			@log.fatal("BenchData.init: called by #{caller}")
 			raise
 		end
 
@@ -468,6 +571,12 @@ if __FILE__ == $0
 		$options[:locping] = '/bin/ping'
 		opts.on('-P','--ping FILE','location of ping (default: /bin/ping)') do |file|
 			$options[:locping] = file
+		end
+
+		#ping location
+		$options[:locuhd] = '/usr/local/bin/uhd_usrp_probe'
+		opts.on('-R','--usrp FILE','location of usrp probe binary (default: /usr/local/bin/uhd_usrp_probe)') do |file|
+			$options[:locuhd] = file
 		end
 
 		#HOSTNAME location
