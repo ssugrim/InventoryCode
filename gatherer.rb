@@ -1,5 +1,5 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 3.5 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
+# gatherer.rb version 3.8 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
 #
 #Adding prefix support, the attribute name creation should occur at the point where the attribute is being populated (the most complete information about what the name should be is there), it is at this 
 #point that the prefix should be decided upon. Most of the time it will default to $options[:prefix], but it could be diffrent
@@ -314,25 +314,48 @@ class USRPData
 		@log = LOG.instance
 		@type =  nil
 		@serial = nil
+		@uhd_version = nil
 		@daughters = nil
 		if2 = nil
+
 		begin
+			#set the communciation interface ip through which we talk to the usrp
 			if2 = Interface.new("eth2")
-			#TODO set proper ip for usrp2
+			if2.set_ip("192.168.10.1","255.255.255.0")
 		rescue InterfaceDoesNotExist => e
+			#there may be no eth2 in the case of USRP1, so this is not a critical error
 			@log.warn("Was not able to find interface #{e.name}")
 		end
 
-
 		data = nil
-		data = Tools.run_cmd("#{$options[:locuhd]}").readlines.join("\n")
+		retries = 0
+		begin
+			#locate the usrp using the uhd_usrp_probe, this may require a couple of tries
+			data = Tools.run_cmd("#{$options[:locuhd]}").readlines.join("\n")
+		rescue ExecError => e
+			#if no uhd was found, output will goto stderr and will trigger an ExecError. 
+			if e.error.scan("No devices found")
+				if retries > 3
+					@log.debug("No USRP fround")
+				else
+					@log.debug("Failed to find usrp on try #{retries}")
+					sleep(10)
+					retries += 1
+					retry
+				end
+			else
+				raise
+			end
+		end
+
 		unless data.nil?
+			@uhd_version = data.scan(/(UHD_.*$)/)
 			@type = data.scan(/Device:\s+(.*)$/)
 			@serial = data.scan(/serial:\s+(.*)$/)
 			@daughters = data.scan(/ID:\s+(.*)$/)
 		end
 	end
-	attr_reader :type,:serial,:daughters
+	attr_reader :type,:serial,:daughters,:uhd_version
 end
 
 class BenchData
@@ -479,6 +502,7 @@ class USB
 			get_id = lambda {|x| return x.match(/(\S{1,4}):(\S{1,4})/).captures.map{|y| sprintf("%04X",y.hex)}.join(":")}
 
 			#lambda to convert nils to empty strings and strip off white spaces
+			#TODO make str_cln part of the Tools class
 			str_cln = lambda {|x| if x.nil? then  return String.new() else  return x.strip end }
 
 			return @devices.map{|x| 
@@ -492,8 +516,27 @@ class USB
 end
 
 class USRP
+	#container class since there may be more than one datum, but they should all be updated via a single cmd
 	def initialize()
 		@log=LOG.instance
+		@usrp_data = USRPData.new()
+	end
+
+	def update(db)
+		if @usrp_data.type.nil?
+			@log.warn("No USRP found")
+			return nil 
+		end
+		dev_name = db.add_dev()
+		s1 = db.add_attr(dev_name,"dev_type",@usrp_data.type)
+		s2 = db.add_attr(dev_name,"serial",@usrp_data.serial)
+		s3 = db.add_attr(dev_name,"uhd_version",@usrp_data.uhd_version)
+		count = 0
+		s4 = @usrp_data.daughters.map{|str| 
+			count += 1
+			db.add_attr(dev_name,"daughter_board_#{count}",str)
+		}
+		return ["Dev added #{dev_name}",s1,s2,s3,s4].flatten.join(" ")
 	end
 end
 
@@ -623,6 +666,11 @@ if __FILE__ == $0
 		usb = USB.new()
 		usb.update(db)
 		log.info("Main: USB data update complete")
+
+		#update usrp
+		usrp = USRP.new()
+		usrp.update(db)
+		log.info("Main: USRP data update complete")
 
 		#then use that db helper to checkin
 		log.info("Main: Checking in")
