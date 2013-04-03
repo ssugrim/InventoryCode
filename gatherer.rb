@@ -89,12 +89,28 @@ class DBhelper
 		#host and node are strings, they are the hostname of the DB server and the fqdn of the node this code is running on respectively. 
 		#prefix is a string, the prefix that will be appeneded to each added attribute. 
 		@log = LOG.instance
-		@db = Database.new(host,prefix)
 		@prefix = prefix
 		@node = node
 
 		#web data cache, only created if needed.
 		@dev_count = 0
+		
+		#make a database object, I'll put retries here incase the initial connection fails.
+		retries = 0
+		begin	
+			@db = Database.new(host,prefix)
+			#Blaket collection of failures, it's ok to retry reguardless of condition.
+		rescue => e
+			if retries > 3
+				@log.fatal ("Could not connet to DB server #{host}")
+				raise
+			else
+				@log.warn("Database connection failed, attempt  #{retries} \n #{e.message}")
+				sleep(10 + rand(10))
+				retries += 1
+				retry
+			end
+		end
 	end
 
 	attr_reader :node,:dev_count
@@ -336,7 +352,7 @@ class USRPData
 			#if no uhd was found, output will goto stderr and will trigger an ExecError. 
 			if e.error.scan("No devices found")
 				if retries > 3
-					@log.debug("No USRP fround")
+					@log.debug("No USRP found")
 				else
 					@log.debug("Failed to find usrp on try #{retries}")
 					sleep(10)

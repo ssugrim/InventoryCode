@@ -93,7 +93,7 @@ class Database
 			@log.info("Restfull DB connected to #{@host}")
 			@log.debug("with code: #{connect.code} \ncookies: #{connect.cookies} \nheaders: #{connect.headers}")
 		rescue
-			@log.fatal("Cant connect to host")
+			@log.warn("Cant connect to host")
 			raise
 		end
 
