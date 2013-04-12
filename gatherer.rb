@@ -1,13 +1,7 @@
 #!/usr/bin/ruby1.8 -w
-# gatherer.rb version 3.8 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
+# gatherer.rb version 3.9 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
 #
-#Adding prefix support, the attribute name creation should occur at the point where the attribute is being populated (the most complete information about what the name should be is there), it is at this 
-#point that the prefix should be decided upon. Most of the time it will default to $options[:prefix], but it could be diffrent
-
-#TODO detect USRP2 via usrp scripts
-#TODO Count CPU cores?
-#TODO Check hard disk status with Smart Tool
-#TODO perhaps search of products that are not paired with a mac 
+#Smart support, upadted restdb interface with time out support
 
 require 'optparse'
 require 'open3'
@@ -85,12 +79,13 @@ class DBhelper
 	#or a device. There is no node add/delete option as the node resouce should never be deleted (it contains non-inventory information). There are add/delete device methods since those are 
 	#purely inventory information and should be under the control of this program. 
 	
-	def initialize(host,node,prefix)
+	def initialize(host,node,prefix,timeout)
 		#host and node are strings, they are the hostname of the DB server and the fqdn of the node this code is running on respectively. 
 		#prefix is a string, the prefix that will be appeneded to each added attribute. 
 		@log = LOG.instance
 		@prefix = prefix
 		@node = node
+		@timeout = timeout
 
 		#web data cache, only created if needed.
 		@dev_count = 0
@@ -98,18 +93,11 @@ class DBhelper
 		#make a database object, I'll put retries here incase the initial connection fails.
 		retries = 0
 		begin	
-			@db = Database.new(host,prefix)
+			@db = Database.new(host,@timeout)
+			@db.set_prefix(prefix)
 			#Blaket collection of failures, it's ok to retry reguardless of condition.
 		rescue => e
-			if retries > 3
 				@log.fatal ("Could not connet to DB server #{host}")
-				raise
-			else
-				@log.warn("Database connection failed, attempt  #{retries} \n #{e.message}")
-				sleep(10 + rand(10))
-				retries += 1
-				retry
-			end
 		end
 	end
 
@@ -317,7 +305,7 @@ class PingData
 		@log.debug("PingData: server address #{server.join(".")}")
 	
 		#the actual ping. regex out the average, that's our data
-
+		sleep(20)
 		@data = Tools.run_cmd("#{$options[:locping]} -c 10 #{server.join(".")}").readlines.join.match(/min\/avg\/max\/mdev\s=\s\d+.\d+\/(\d+.\d+)\/\d+.\d+\/\d+.\d+/).captures.join
 		@log.debug("PingData: Average ping time was #{data}")
 	end
@@ -332,6 +320,7 @@ class USRPData
 		@serial = nil
 		@uhd_version = nil
 		@daughters = nil
+		@id = nil
 		if2 = nil
 
 		begin
@@ -369,9 +358,16 @@ class USRPData
 			@type = data.scan(/Device:\s+(.*)$/)
 			@serial = data.scan(/serial:\s+(.*)$/)
 			@daughters = data.scan(/ID:\s+(.*)$/)
+			if @type.join.include?("USRP1")
+				@id = "FFFE:0002"
+			elsif @type.join.include?("USRP2")
+				@id = "FFFE:0003"
+			else
+				@id = "FFFE:0000"
+			end
 		end
 	end
-	attr_reader :type,:serial,:daughters,:uhd_version
+	attr_reader :type,:serial,:daughters,:uhd_version,:id
 end
 
 class BenchData
@@ -384,6 +380,23 @@ class BenchData
 		@log.debug("BenchMark: value #{@data}")
 	end
 	attr_reader :data
+end
+
+class DiskData
+	def initialize()
+		@log  = LOG.instance
+
+		#dig out the size and sn from lshw
+		get_data = lambda {|name, array| dat = Tools.dig(name,array).flatten.last; return dat.nil? ? nil : dat.strip}
+		disk = LshwData.new("disk")
+		@hd_size = get_data.call("size",disk.data)
+		@hd_sn = get_data.call("serial",disk.data)
+
+		#get the model from smartctl
+		@hd_model = Tools.run_cmd("#{$options[:loclsmart]} -a #{$options[:locdiskdev]}").readlines.join.scan(/Model\s+Family:\s+(.*)$/).first
+		@log.debug("Disk model was #{@hd_model}")
+	end
+	attr_reader :hd_size, :hd_sn, :hd_model
 end
 
 class System 
@@ -409,9 +422,10 @@ class System
 		@cpu_bench =  BenchData.new.data
 
 		#extract the disk data
-		disk = LshwData.new("disk")
-		@hd_size = get_data.call("size",disk.data)
-		@hd_sn = get_data.call("serial",disk.data)
+		disk = DiskData.new()
+		@hd_size = disk.hd_size
+		@hd_sn = disk.hd_sn
+		@hd_model = disk.hd_model
 
 		#extract the motherboard serial number 
 		mb = LshwData.new("system")
@@ -429,7 +443,7 @@ class System
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DB
-		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn","cpu_bench","fw_ping"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn,@cpu_bench,@fw_ping])
+		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn","cpu_bench","fw_ping","hd_model"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn,@cpu_bench,@fw_ping,@hd_model])
 		return  data.map{|arr| db.add_attr(db.node,arr[0],arr[1])}.join(" ")
 
 	end
@@ -499,7 +513,7 @@ class USB
 		@devices = nil
 		#extract usb data
 		#there should be any multi level nesting, drop any kvm or Internal USB hub records
-		rawdata	=  LsusbData.new().data.reject{|x| Tools.contains?("ATEN International",x) or Tools.contains?("Linux Foundation",x) or Tools.contains?("Intel Corp. Integrated Rate Matching Hub",x) }
+		rawdata	=  LsusbData.new().data.reject{|x| Tools.contains?("ATEN International",x) or Tools.contains?("Linux Foundation",x) or Tools.contains?("Intel Corp. Integrated Rate Matching Hub",x)  or Tools.contains?("FFFE:0002",x) or Tools.contains?("fffe:0002",x)}
 		#all we care about are the device names, lsusb output should be fairly constant
 		unless rawdata.empty?
 			@devices = Tools.tuples(rawdata)
@@ -544,6 +558,7 @@ class USRP
 			return nil 
 		end
 		dev_name = db.add_dev()
+		s0 = db.add_attr(dev_name,"dev_id",@usrp_data.id)
 		s1 = db.add_attr(dev_name,"dev_type",@usrp_data.type)
 		s2 = db.add_attr(dev_name,"serial",@usrp_data.serial)
 		s3 = db.add_attr(dev_name,"uhd_version",@usrp_data.uhd_version)
@@ -552,7 +567,7 @@ class USRP
 			count += 1
 			db.add_attr(dev_name,"daughter_board_#{count}",str)
 		}
-		return ["Dev added #{dev_name}",s1,s2,s3,s4].flatten.join(" ")
+		return ["Dev added #{dev_name}",s0,s1,s2,s3,s4].flatten.join(" ")
 	end
 end
 
@@ -573,6 +588,24 @@ if __FILE__ == $0
 		$options[:logfile] = nil
 		opts.on('-l','--logfile FILE','Where to store the log file (default: STDOUT)') do |file|
 			$options[:logfile] = file
+		end
+
+		#Database timeout
+		$options[:timeout] = 90
+		opts.on('-T','--timeout TIMEOUT','Database time out (default: 90)') do |tm|
+			$options[:timeout] = tm
+		end
+
+		#Primary disk name 
+		$options[:locdiskdev] = '/dev/sda'
+		opts.on('-D','--diskdev FILE','location of Disk Device (default: /dev/sda)') do |file|
+			$options[:locdiskdev] = file
+		end
+
+		#Smartmontool location
+		$options[:loclsmart] = '/usr/sbin/smartctl'
+		opts.on('-S','--smrt FILE','location of smartctl executeable (default: /usr/sbin/smartctl)') do |file|
+			$options[:loclsmart] = file
 		end
 
 		#LSHW location
@@ -605,9 +638,9 @@ if __FILE__ == $0
 			$options[:locping] = file
 		end
 
-		#ping location
+		#uhd location
 		$options[:locuhd] = '/usr/local/bin/uhd_usrp_probe'
-		opts.on('-R','--usrp FILE','location of usrp probe binary (default: /usr/local/bin/uhd_usrp_probe)') do |file|
+		opts.on('-P','--uhd FILE','location of uhd usrp probe binary (default: /usr/local/bin/uhd_usrp_probe)') do |file|
 			$options[:locuhd] = file
 		end
 
@@ -661,7 +694,7 @@ if __FILE__ == $0
 		nd = NodeData.instance
 	
 		#now that we know the fqdn, we can make a DBhleper	
-		db = DBhelper.new($options[:dbserver],nd.fqdn,$options[:prefix])
+		db = DBhelper.new($options[:dbserver],nd.fqdn,$options[:prefix],$options[:timeout])
 		
 		#we want to reset the node state so that it's ready to accept new data
 		log.info("Main: Dumping #{$options[:prefix]} attributes for #{nd.fqdn}")
