@@ -356,14 +356,32 @@ class USRPData
 			@uhd_version = data.scan(/(UHD_.*$)/)
 			@type = data.scan(/Device:\s+(.*)$/)
 			@serial = data.scan(/serial:\s+(.*)$/)
-			@daughters = data.scan(/ID:\s+(.*)$/)
-			if @type.join.include?("USRP1")
+
+			@mboard = data.scan(/Mboard:\s+(.*)$/)
+			case
+			when @mboard.include?("USRP1")
 				@id = "FFFE:0002"
-			elsif @type.join.include?("USRP2")
+			when @mboard.join.include?("USRP2")
 				@id = "FFFE:0003"
+			when @mboard.join.include?("N210")
+				@id = "FFFE:0004"
 			else
 				@id = "FFFE:0000"
 			end
+
+			@daughters = data.scan(/ID:\s+(.*?)\s+\(/).uniq.map{|str|
+			if str.include?("XCVR2450")
+				[str, "FFFF:0001"]
+			elsif str.include?("WBX")
+				[str, "FFFF:0002"]
+			elsif str.include?("SBX")
+				[str, "FFFF:0003"]
+			elsif str.include?("WBX, WBX + Simple GDB")
+				[str, "FFFF:0004"]
+			else 
+				[str, "FFFF:0000"]
+			end
+			}
 		end
 	end
 	attr_reader :type,:serial,:daughters,:uhd_version,:id
@@ -561,10 +579,11 @@ class USRP
 		s1 = db.add_attr(dev_name,"dev_type",@usrp_data.type)
 		s2 = db.add_attr(dev_name,"serial",@usrp_data.serial)
 		s3 = db.add_attr(dev_name,"uhd_version",@usrp_data.uhd_version)
-		count = 0
-		s4 = @usrp_data.daughters.map{|str| 
-			count += 1
-			db.add_attr(dev_name,"daughter_board_#{count}",str)
+		s4 = String.new
+		@usrp_data.daughters.each{|arr| 
+			dev_name = db.add_dev()
+			s4.concat(db.add_attr(dev_name,"dev_type",arr[0]))
+			s4.concat(db.add_attr(dev_name,"dev_id",arr[1]))
 		}
 		return ["Dev added #{dev_name}",s0,s1,s2,s3,s4].flatten.join(" ")
 	end
