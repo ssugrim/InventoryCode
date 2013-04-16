@@ -90,14 +90,13 @@ class DBhelper
 		#web data cache, only created if needed.
 		@dev_count = 0
 		
-		#make a database object, I'll put retries here incase the initial connection fails.
+		#make a database object and set he prefix
 		retries = 0
 		begin	
 			@db = Database.new(host,@timeout)
 			@db.set_prefix(prefix)
-			#Blaket collection of failures, it's ok to retry reguardless of condition.
 		rescue => e
-				@log.fatal ("Could not connet to DB server #{host}")
+				@log.fatal("Could not connet to DB server #{host}")
 		end
 	end
 
@@ -393,7 +392,7 @@ class DiskData
 		@hd_sn = get_data.call("serial",disk.data)
 
 		#get the model from smartctl
-		@hd_model = Tools.run_cmd("#{$options[:loclsmart]} -a #{$options[:locdiskdev]}").readlines.join.scan(/Model\s+Family:\s+(.*)$/).first
+		@hd_model = Tools.run_cmd("#{$options[:loclsmart]} -a #{$options[:locdiskdev]}").readlines.join.scan(/[Mm]odel.*?:\s*(.*)$/).first
 		@log.debug("Disk model was #{@hd_model}")
 	end
 	attr_reader :hd_size, :hd_sn, :hd_model

@@ -13,6 +13,12 @@ class AddAttrError < StandardError
 end
 
 class GetAttrError < StandardError
+	attr_accessor :result
+
+	def initialize(message = nil, result = nil)
+		super(message)
+		self.result = result
+	end
 end
 
 class BadAttrName < StandardError
@@ -22,6 +28,15 @@ class AddResError < StandardError
 end
 
 class DelResError < StandardError
+	attr_accessor :result
+
+	def initialize(message = nil, result = nil)
+		super(message)
+		self.result = result
+	end
+end
+
+class BadPrefix < StandardError
 end
 
 class Tools
@@ -80,23 +95,33 @@ end
 
 class Database
 	#Container for the live object rest api
-	def initialize(host, prefix)
+	def initialize(host,loc_timeout)
 		@log = LOG.instance
 
 		#the prefix value is what the del_all_attr method uses to filter records. It must be set, and any attributes submitted to the add method will be checked for this prefix.
-		@prefix = prefix
+		@prefix = nil
 
 		#By default this should be "http://internal1.orbit-lab.org:5054/inventory/"
 		@host = host
+		@timeout = loc_timeout
+
+
 		begin
-			connect = RestClient.get @host
+			resource  = RestClient::Resource.new host, :timeout => @timeout, :open_timeout => @timeout
+			connect = resource.get
 			@log.info("Restfull DB connected to #{@host}")
 			@log.debug("with code: #{connect.code} \ncookies: #{connect.cookies} \nheaders: #{connect.headers}")
 		rescue
-			@log.warn("Cant connect to host")
+			@log.fatal("Cant connect to host")
 			raise
 		end
 
+	end
+
+	def set_prefix(prefix)
+		# set the prefix 
+		@log.debug("Prefix set to #{prefix}")
+		@prefix = prefix
 	end
 
 	def del_attr(resource,name)
@@ -106,7 +131,7 @@ class Database
 		
 		host  = @host + "attribute_delete"
 		begin
-			result = RestClient.get host, {:params => {:name => resource, :attribute => name}}
+			result = call_rest(host, {:name => resource, :attribute => name})
 			@log.debug("Resource #{resource} had #{name} deleted  with result  #{result.to_str}")
 			raise DelAttrError , result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue DelAttrError
@@ -122,9 +147,10 @@ class Database
 	def del_all_attr(resource)
 		#delete attributes from resources that are prefixed with @prefix
 		#resource, name resource FQDN, and attribute name respectively. 
+		raise BadPrefix if @prefix == nil
 		host  = @host + "attribute_delete"
 		begin
-			result = RestClient.get host, {:params => {:name => resource, :attribute => "#{@prefix}*"}}
+			result = call_rest(host, {:name => resource, :attribute => "#{@prefix}*"})
 			@log.debug("Resource #{resource} had attributes deleted  with result  #{result.to_str}")
 			raise DelAttrError , result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue DelAttrError
@@ -141,17 +167,18 @@ class Database
 		#modify an attribute to a resource
 		#resource, name and value are strings are the resource FQDN, attribute name, and attrbute value respectively. 
 		#Name must be prefixed with @prefix other wise it's going to complain
+		raise BadPrefix if @prefix == nil
 		host  = @host + "attribute_modify"
 
 		#I won't adjust your name, but I will bark at you if you don't comply
 		raise BadAttrName, "Must prefix attribute name with #{@prefix}" if name.match(/^#{@prefix}/).nil?
 
 		begin
-			result = RestClient.get host, {:params => {:name => resource, :attribute => name, :value => value}}
+			result = call_rest(host, {:name => resource, :attribute => name, :value => value})
 			@log.debug("Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
 			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddAttrError
-			@log.warn("Attribute modify failed with error \n #{result.to_str}")
+			@log.debug("Attribute modify failed with error \n #{result.to_str}")
 			raise
 		rescue
 			@log.fatal("Attribute modify failed")
@@ -164,17 +191,18 @@ class Database
 		#adds an attribute to a resource
 		#resource, name and value are strings are the resource FQDN, attribute name, and attrbute value respectively. 
 		#Name must be prefixed with @prefix other wise it's going to complain
+		raise BadPrefix if @prefix == nil
 		host  = @host + "attribute_add"
 
 		#I won't adjust your name, but I will bark at you if you don't comply
 		raise BadAttrName, "Must prefix attribute name with #{@prefix}" if name.match(/^#{@prefix}/).nil?
 
 		begin
-			result = RestClient.get host, {:params => {:name => resource, :attribute => name, :value => value}}
+			result = call_rest(host, {:name => resource, :attribute => name, :value => value})
 			@log.debug("Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
 			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddAttrError
-			@log.warn("Attribute addition failed with error \n #{result.to_str}")
+			@log.debug("Attribute addition failed with error \n #{result.to_str}")
 			raise
 		rescue
 			@log.fatal("Attribute addition failed")
@@ -183,17 +211,57 @@ class Database
 		return result
 	end
 
-	def get_attr(resource)
-		#gets the attribues of a given resource from the data base
-		#resource is a string, the FQDN of the resource we want data for
+	def add_attr_np(resource,name,value)
+		#adds an attribute to a resource
+		#resource, name and value are strings are the resource FQDN, attribute name, and attrbute value respectively. 
+		host  = @host + "attribute_add"
+
+		begin
+			result = call_rest(host, {:name => resource, :attribute => name, :value => value})
+			@log.debug("Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
+			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+		rescue AddAttrError
+			@log.debug("Attribute addition failed with error \n #{result.to_str}")
+			raise
+		rescue
+			@log.fatal("Attribute addition failed")
+			raise
+		end
+		return result
+	end
+
+	def get_attr(resource, attr="*")
+		#gets the attribues of a given resource from the data base, resource is a string, the name of the resouce whose attributes
+		#we want. will accept wild cards
+		#Returns an array of nodes or devices which are 2 tuples, item 1 is the type (node|device) item 2 is the data
+		
 		host  = @host + "attribute_list"
 		begin
-			result = RestClient.get host, {:params => {:set => resource, :attribute => "*"}}
-			raise GetAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+			#get the attributes from the rest db
+			result = call_rest(host, {:set => resource, :attribute => attr})
+			raise GetAttrError.new("Failed to get attribute", result) unless result.scan(/ERROR/).empty?
+
+			#split the attrtivbutes  into arrays of node data or device data (one entitiy per array)
+			#parse data string for key=value pairs, the first entry stores wheter it's a node or a device
+			return result.scan(/<(node|device)(.*?)>/).map{|x| [x[0], x[1].scan(/(\S*)='(.*?)'/)]}.reject{|x| x[1].empty?}
+		rescue GetAttrError => e
+			@log.debug("Get attribute failed with error \n #{e.result}")
+			raise
+		rescue
+			@log.fatal("Attribute retrival failed")
+			raise
+		end
+	end
+
+	def get_devs(domain)
+		host  = @host + "attribute_list"
+		begin
+			result = call_rest(host, {:set => "*" + domain + "*", :attribute => "INV_dev*"})
+			raise GetAttrError.new("Failed to get attribute", result.to_str) unless result.to_str.scan(/ERROR/).empty?
 			#parse string for key=value pairs
-			return result.to_str.scan(/(\S*)='(.*?)'/)
-		rescue GetAttrError
-			@log.warn("Get attribute failed with error \n #{result.to_str}")
+			return result.to_str.scan(/\<device(.*?)\/>/).map{|arr| arr.join(" ").scan(/(\S*)='(.*?)'/).reject{|x| x.first.include?("status")}}
+		rescue GetAttrError => e
+			@log.debug("Get attribute failed with error \n #{e.result}")
 			raise
 		rescue
 			@log.fatal("Attribute retrival failed")
@@ -206,14 +274,14 @@ class Database
 		host  = @host + "resource_delete"
 
 		begin
-			result = RestClient.get host, {:params => {:set => resource}}
+			result = call_rest(host, {:set => resource})
 			@log.debug("Resource #{resource} had delete  with result  #{result.to_str}")
-			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
-		rescue AddResError
-			@log.warn("Resource deletion failed with error \n #{result.to_str}")
+			raise DelResError.new( "Resource Deletion failed", result.to_str) unless result.to_str.scan(/ERROR/).empty?
+		rescue DelResError => e
+			@log.debug("Resource deletion failed with error \n #{e.result}")
 			raise
 		rescue
-			@log.fatal("Resource deleteion failed")
+			@log.fatal("Resource deleteion failed with non rest error")
 			raise
 		end
 		return result
@@ -225,11 +293,11 @@ class Database
 		host  = @host + "resource_add"
 
 		begin
-			result = RestClient.get host, {:params => {:name => resource, :type => type}}
+			result = call_rest(host, {:name => resource, :type => type})
 			@log.debug("Resource #{resource} had type=#{type} set  with result  #{result.to_str}")
 			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddResError
-			@log.warn("Resource addition failed with error \n #{result.to_str}")
+			@log.debug("Resource addition failed with error \n #{result.to_str}")
 			raise
 		rescue
 			@log.fatal("Resource addition failed")
@@ -239,17 +307,15 @@ class Database
 	end
 
 	def add_relation(parent,child)
-		#adds an attribute to a resource
-		#parent is fqdn of node and child is usually parent fqdn + moniker
-		#Name must be prefixed with @prefix other wise it's going to complain
+		#add a relationship between a parent and a child
 		host  = @host + "relation_add"
 
 		begin
-			result = RestClient.get host, {:params => {:parent => parent, :child => child}}
+			result = call_rest( host, {:parent => parent, :child => child})
 			@log.debug("#{parent} to #{child} relation added with  #{result.to_str}")
 			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddResError
-			@log.warn("Relation addition failed with error \n #{result.to_str}")
+			@log.debug("Relation addition failed with error \n #{result.to_str}")
 			raise
 		rescue
 			@log.fatal("Relation addition failed")
@@ -258,22 +324,64 @@ class Database
 		return result
 	end
 
+	def list_resource(type, parent= nil)
+		#parent is a string, name of the parent to check wheter children exist. Returns an array of strings which are the resource names of the children.
+		host  = @host + "resource_list"
+
+		begin
+			parent ? params = {:parent=> parent, :type => type} : params = {:type => type}
+			result = call_rest(host, params)
+			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
+			return result.to_str.scan(/(\S*)='(.*?)'/)
+		rescue AddResError
+			@log.debug("Relation addition failed with error \n #{result.to_str}")
+			raise
+		rescue
+			@log.fatal("Relation addition failed")
+			raise
+		end
+	end
+
 	def list_relation(parent)
 		#parent is a string, name of the parent to check wheter children exist. Returns an array of strings which are the resource names of the children.
 		host  = @host + "resource_list"
 
 		begin
-			result = RestClient.get host, {:params => {:parent => parent}}
+			result = call_rest(host, {:parent => parent})
 			children = result.to_str.scan(/resource name='(.*?)'/).flatten
 			@log.debug("#{parent} has #{children.length} relations  #{result.to_str}")
 			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddResError
-			@log.warn("Relation addition failed with error \n #{result.to_str}")
+			@log.debug("Relation addition failed with error \n #{result.to_str}")
 			raise
 		rescue
 			@log.fatal("Relation addition failed")
 			raise
 		end
 		return children
+	end
+
+	def call_rest(host, params = nil)
+		#get wrapper to trap centralised errors like time outs
+		retries = 0
+		begin
+			resource  = RestClient::Resource.new host, :timeout => @timeout, :open_timeout => @timeout
+			if params.nil?
+				result = resource.get
+			else
+				result = resource.get :params => params
+			end
+		rescue RestClient::RequestTimeout => e
+			if retries > 3
+				@log.fatal("Could not connet to DB server #{host}")
+				raise
+			else
+				@log.warn("Database connection timedout, attempt  #{retries} \n #{e.message}")
+				sleep rand(10)
+				retries += 1
+				retry
+			end
+		end
+		return result
 	end
 end
