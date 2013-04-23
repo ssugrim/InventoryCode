@@ -95,7 +95,7 @@ end
 
 class Database
 	#Container for the live object rest api
-	def initialize(host,loc_timeout)
+	def initialize(host,loc_timeout = 120 ,retry_limit = 5, stagger = 2)
 		@log = LOG.instance
 
 		#the prefix value is what the del_all_attr method uses to filter records. It must be set, and any attributes submitted to the add method will be checked for this prefix.
@@ -104,15 +104,17 @@ class Database
 		#By default this should be "http://internal1.orbit-lab.org:5054/inventory/"
 		@host = host
 		@timeout = loc_timeout
+		@retry_limit = retry_limit
+		@stagger = stagger
 
 
 		begin
 			resource  = RestClient::Resource.new host, :timeout => @timeout, :open_timeout => @timeout
 			connect = resource.get
-			@log.info("Restfull DB connected to #{@host}")
-			@log.debug("with code: #{connect.code} \ncookies: #{connect.cookies} \nheaders: #{connect.headers}")
+			@log.info("Database: Restfull DB connected to #{@host}")
+			@log.debug("Database: with code: #{connect.code} \ncookies: #{connect.cookies} \nheaders: #{connect.headers}")
 		rescue
-			@log.fatal("Cant connect to host")
+			@log.fatal("Database: Cant connect to host")
 			raise
 		end
 
@@ -120,7 +122,7 @@ class Database
 
 	def set_prefix(prefix)
 		# set the prefix 
-		@log.debug("Prefix set to #{prefix}")
+		@log.debug("Database: Prefix set to #{prefix}")
 		@prefix = prefix
 	end
 
@@ -132,13 +134,13 @@ class Database
 		host  = @host + "attribute_delete"
 		begin
 			result = call_rest(host, {:name => resource, :attribute => name})
-			@log.debug("Resource #{resource} had #{name} deleted  with result  #{result.to_str}")
+			@log.debug("Database: Resource #{resource} had #{name} deleted  with result  #{result.to_str}")
 			raise DelAttrError , result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue DelAttrError
-			@log.debug("Attribute Deleteion failed with error \n #{result.to_str}")
+			@log.debug("Database: Attribute Deleteion failed with error \n #{result.to_str}")
 			raise
 		rescue 
-			@log.fatal("Attribute Deleteion failed}")
+			@log.fatal("Database: Attribute Deleteion failed}")
 			raise
 		end
 		return result
@@ -151,13 +153,13 @@ class Database
 		host  = @host + "attribute_delete"
 		begin
 			result = call_rest(host, {:name => resource, :attribute => "#{@prefix}*"})
-			@log.debug("Resource #{resource} had attributes deleted  with result  #{result.to_str}")
+			@log.debug("Database: Resource #{resource} had attributes deleted  with result  #{result.to_str}")
 			raise DelAttrError , result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue DelAttrError
-			@log.debug("Attribute Deleteion failed with error \n #{result.to_str}")
+			@log.debug("Database: Attribute Deleteion failed with error \n #{result.to_str}")
 			raise
 		rescue 
-			@log.fatal("Attribute Deleteion failed}")
+			@log.fatal("Database: Attribute Deleteion failed}")
 			raise
 		end
 		return result
@@ -175,13 +177,13 @@ class Database
 
 		begin
 			result = call_rest(host, {:name => resource, :attribute => name, :value => value})
-			@log.debug("Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
+			@log.debug("Database: Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
 			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddAttrError
-			@log.debug("Attribute modify failed with error \n #{result.to_str}")
+			@log.debug("Database: Attribute modify failed with error \n #{result.to_str}")
 			raise
 		rescue
-			@log.fatal("Attribute modify failed")
+			@log.fatal("Database: Attribute modify failed")
 			raise
 		end
 		return result
@@ -199,13 +201,13 @@ class Database
 
 		begin
 			result = call_rest(host, {:name => resource, :attribute => name, :value => value})
-			@log.debug("Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
+			@log.debug("Database: Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
 			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddAttrError
-			@log.debug("Attribute addition failed with error \n #{result.to_str}")
+			@log.debug("Database: Attribute addition failed with error \n #{result.to_str}")
 			raise
 		rescue
-			@log.fatal("Attribute addition failed")
+			@log.fatal("Database: Attribute addition failed")
 			raise
 		end
 		return result
@@ -218,13 +220,13 @@ class Database
 
 		begin
 			result = call_rest(host, {:name => resource, :attribute => name, :value => value})
-			@log.debug("Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
+			@log.debug("Database: Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
 			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddAttrError
-			@log.debug("Attribute addition failed with error \n #{result.to_str}")
+			@log.debug("Database: Attribute addition failed with error \n #{result.to_str}")
 			raise
 		rescue
-			@log.fatal("Attribute addition failed")
+			@log.fatal("Database: Attribute addition failed")
 			raise
 		end
 		return result
@@ -245,10 +247,10 @@ class Database
 			#parse data string for key=value pairs, the first entry stores wheter it's a node or a device
 			return result.scan(/<(node|device)(.*?)>/).map{|x| [x[0], x[1].scan(/(\S*)='(.*?)'/)]}.reject{|x| x[1].empty?}
 		rescue GetAttrError => e
-			@log.debug("Get attribute failed with error \n #{e.result}")
+			@log.debug("Database: Get attribute failed with error \n #{e.result}")
 			raise
 		rescue
-			@log.fatal("Attribute retrival failed")
+			@log.fatal("Database: Attribute retrival failed")
 			raise
 		end
 	end
@@ -261,10 +263,10 @@ class Database
 			#parse string for key=value pairs
 			return result.to_str.scan(/\<device(.*?)\/>/).map{|arr| arr.join(" ").scan(/(\S*)='(.*?)'/).reject{|x| x.first.include?("status")}}
 		rescue GetAttrError => e
-			@log.debug("Get attribute failed with error \n #{e.result}")
+			@log.debug("Database: Get attribute failed with error \n #{e.result}")
 			raise
 		rescue
-			@log.fatal("Attribute retrival failed")
+			@log.fatal("Database: Attribute retrival failed")
 			raise
 		end
 	end
@@ -275,13 +277,13 @@ class Database
 
 		begin
 			result = call_rest(host, {:set => resource})
-			@log.debug("Resource #{resource} had delete  with result  #{result.to_str}")
+			@log.debug("Database: Resource #{resource} had delete  with result  #{result.to_str}")
 			raise DelResError.new( "Resource Deletion failed", result.to_str) unless result.to_str.scan(/ERROR/).empty?
 		rescue DelResError => e
-			@log.debug("Resource deletion failed with error \n #{e.result}")
+			@log.debug("Database: Resource deletion failed with error \n #{e.result}")
 			raise
 		rescue
-			@log.fatal("Resource deleteion failed with non rest error")
+			@log.fatal("Database: Resource deleteion failed with non rest error")
 			raise
 		end
 		return result
@@ -294,13 +296,13 @@ class Database
 
 		begin
 			result = call_rest(host, {:name => resource, :type => type})
-			@log.debug("Resource #{resource} had type=#{type} set  with result  #{result.to_str}")
+			@log.debug("Database: Resource #{resource} had type=#{type} set  with result  #{result.to_str}")
 			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddResError
-			@log.debug("Resource addition failed with error \n #{result.to_str}")
+			@log.debug("Database: Resource addition failed with error \n #{result.to_str}")
 			raise
 		rescue
-			@log.fatal("Resource addition failed")
+			@log.fatal("Database: Resource addition failed")
 			raise
 		end
 		return result
@@ -312,13 +314,13 @@ class Database
 
 		begin
 			result = call_rest( host, {:parent => parent, :child => child})
-			@log.debug("#{parent} to #{child} relation added with  #{result.to_str}")
+			@log.debug("Database: #{parent} to #{child} relation added with  #{result.to_str}")
 			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddResError
-			@log.debug("Relation addition failed with error \n #{result.to_str}")
+			@log.debug("Database: Relation addition failed with error \n #{result.to_str}")
 			raise
 		rescue
-			@log.fatal("Relation addition failed")
+			@log.fatal("Database: Relation addition failed")
 			raise
 		end
 		return result
@@ -334,10 +336,10 @@ class Database
 			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 			return result.to_str.scan(/(\S*)='(.*?)'/)
 		rescue AddResError
-			@log.debug("Relation addition failed with error \n #{result.to_str}")
+			@log.debug("Database: Relation addition failed with error \n #{result.to_str}")
 			raise
 		rescue
-			@log.fatal("Relation addition failed")
+			@log.fatal("Database: Relation addition failed")
 			raise
 		end
 	end
@@ -349,13 +351,13 @@ class Database
 		begin
 			result = call_rest(host, {:parent => parent})
 			children = result.to_str.scan(/resource name='(.*?)'/).flatten
-			@log.debug("#{parent} has #{children.length} relations  #{result.to_str}")
+			@log.debug("Database: #{parent} has #{children.length} relations  #{result.to_str}")
 			raise AddResError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddResError
-			@log.debug("Relation addition failed with error \n #{result.to_str}")
+			@log.debug("Database: Relation addition failed with error \n #{result.to_str}")
 			raise
 		rescue
-			@log.fatal("Relation addition failed")
+			@log.fatal("Database: Relation addition failed")
 			raise
 		end
 		return children
@@ -364,6 +366,10 @@ class Database
 	def call_rest(host, params = nil)
 		#get wrapper to trap centralised errors like time outs
 		retries = 0
+		stag = rand(@stagger) + @stagger
+		@log.debug("Database: Staggering rest call by #{stag}")
+		sleep(stag)
+
 		begin
 			resource  = RestClient::Resource.new host, :timeout => @timeout, :open_timeout => @timeout
 			if params.nil?
@@ -372,11 +378,11 @@ class Database
 				result = resource.get :params => params
 			end
 		rescue RestClient::RequestTimeout => e
-			if retries > 3
-				@log.fatal("Could not connet to DB server #{host}")
+			if retries > @retry_limit
+				@log.fatal("Database: Could not connet to DB server #{host}")
 				raise
 			else
-				@log.warn("Database connection timedout, attempt  #{retries} \n #{e.message}")
+				@log.warn("Database: Database connection timedout, attempt  #{retries} \n #{e.message}")
 				sleep rand(10)
 				retries += 1
 				retry

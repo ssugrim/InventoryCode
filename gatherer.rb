@@ -359,7 +359,7 @@ class USRPData
 
 			@mboard = data.scan(/Mboard:\s+(.*)$/)
 			case
-			when @mboard.include?("USRP1")
+			when @mboard.join.include?("USRP1")
 				@id = "FFFE:0002"
 			when @mboard.join.include?("USRP2")
 				@id = "FFFE:0003"
@@ -371,15 +371,15 @@ class USRPData
 
 			@daughters = data.scan(/ID:\s+(.*?)\s+\(/).uniq.map{|str|
 			if str.include?("XCVR2450")
-				[str, "FFFF:0001"]
+				[str, "FFFE:0005"]
 			elsif str.include?("WBX")
-				[str, "FFFF:0002"]
+				[str, "FFFE:0006"]
 			elsif str.include?("SBX")
-				[str, "FFFF:0003"]
+				[str, "FFFE:0007"]
 			elsif str.include?("WBX, WBX + Simple GDB")
-				[str, "FFFF:0004"]
+				[str, "FFFE:0008"]
 			else 
-				[str, "FFFF:0000"]
+				[str, "FFFE:0001"]
 			end
 			}
 		end
@@ -609,8 +609,8 @@ if __FILE__ == $0
 		end
 
 		#Database timeout
-		$options[:timeout] = 90
-		opts.on('-T','--timeout TIMEOUT','Database time out (default: 90)') do |tm|
+		$options[:timeout] = 120
+		opts.on('-T','--timeout TIMEOUT','Database time out (default: 120)') do |tm|
 			$options[:timeout] = tm
 		end
 
