@@ -366,9 +366,12 @@ class Database
 	def call_rest(host, params = nil)
 		#get wrapper to trap centralised errors like time outs
 		retries = 0
-		stag = rand(@stagger) + @stagger
-		@log.debug("Database: Staggering rest call by #{stag}")
-		sleep(stag)
+
+		unless @stagger == 0
+			stag = rand(@stagger) + @stagger
+			@log.debug("Database: Staggering rest call by #{stag}")
+			sleep(stag)
+		end
 
 		begin
 			resource  = RestClient::Resource.new host, :timeout => @timeout, :open_timeout => @timeout
