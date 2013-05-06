@@ -9,6 +9,7 @@ require 'find'
 require 'singleton'
 require 'log_wrap'
 require 'rest_db'
+require 'net/smtp'
 
 #Some Custom Errors
 
@@ -79,13 +80,15 @@ class DBhelper
 	#or a device. There is no node add/delete option as the node resouce should never be deleted (it contains non-inventory information). There are add/delete device methods since those are 
 	#purely inventory information and should be under the control of this program. 
 	
-	def initialize(host,node,prefix,timeout)
+	def initialize(host,node,prefix,timeout,retry_limit,stagger)
 		#host and node are strings, they are the hostname of the DB server and the fqdn of the node this code is running on respectively. 
 		#prefix is a string, the prefix that will be appeneded to each added attribute. 
 		@log = LOG.instance
 		@prefix = prefix
 		@node = node
 		@timeout = timeout
+		@retry_limit = retry_limit
+		@stagger = stagger
 
 		#web data cache, only created if needed.
 		@dev_count = 0
@@ -93,10 +96,11 @@ class DBhelper
 		#make a database object and set he prefix
 		retries = 0
 		begin	
-			@db = Database.new(host,@timeout)
+			@db = Database.new(host,@timeout,@retry_limit,@stagger)
 			@db.set_prefix(prefix)
 		rescue => e
 				@log.fatal("Could not connet to DB server #{host}")
+				raise
 		end
 	end
 
@@ -610,73 +614,25 @@ if __FILE__ == $0
 
 		#Database timeout
 		$options[:timeout] = 120
-		opts.on('-T','--timeout TIMEOUT','Database time out (default: 120)') do |tm|
+		opts.on('-t','--timeout TIMEOUT','Database time out (default: 120)') do |tm|
 			$options[:timeout] = tm
 		end
 
-		#Primary disk name 
-		$options[:locdiskdev] = '/dev/sda'
-		opts.on('-D','--diskdev FILE','location of Disk Device (default: /dev/sda)') do |file|
-			$options[:locdiskdev] = file
+		#Database timeout
+		$options[:stagger] = 0
+		opts.on('-s','--stagger STAGGERTIME','Wait Time between Database calls (default: 0)') do |st|
+			$options[:stagger] = st
 		end
 
-		#Smartmontool location
-		$options[:loclsmart] = '/usr/sbin/smartctl'
-		opts.on('-S','--smrt FILE','location of smartctl executeable (default: /usr/sbin/smartctl)') do |file|
-			$options[:loclsmart] = file
-		end
-
-		#LSHW location
-		$options[:loclshw] = '/usr/bin/lshw'
-		opts.on('-L','--lshw FILE','location of lshw executeable (default: /usr/bin/lshw)') do |file|
-			$options[:loclshw] = file
-		end
-
-		#LSUSB location
-		$options[:loclsusb] = '/usr/bin/lsusb'
-		opts.on('-U','--lsusb FILE','location of lsusb executeable (default: /usr/sbin/lsusb)') do |file|
-			$options[:loclsusb] = file
-		end
-
-		#Sysbench location
-		$options[:locbench] = '/usr/bin/sysbench'
-		opts.on('-b','--bench FILE','location of sysbench executeable (default: /usr/bin/sysbench)') do |file|
-			$options[:locbench] = file
-		end
-
-		#ifconfig location
-		$options[:locifconfig] = '/sbin/ifconfig'
-		opts.on('-I','--ifcon FILE','location of ifconfig (default: /sbin/ifconfig)') do |file|
-			$options[:locifconfig] = file
-		end
-
-		#ping location
-		$options[:locping] = '/bin/ping'
-		opts.on('-P','--ping FILE','location of ping (default: /bin/ping)') do |file|
-			$options[:locping] = file
-		end
-
-		#uhd location
-		$options[:locuhd] = '/usr/local/bin/uhd_usrp_probe'
-		opts.on('-P','--uhd FILE','location of uhd usrp probe binary (default: /usr/local/bin/uhd_usrp_probe)') do |file|
-			$options[:locuhd] = file
-		end
-
-		#HOSTNAME location
-		$options[:lochostname] = '/bin/hostname'
-		opts.on('-H','--hostname FILE','location of hostname executeable (default: /bin/hostname)') do |file|
-			$options[:lochostname] = file
-		end
-
-		#HOSTNAME location
-		$options[:locdate] = '/bin/date'
-		opts.on('-D','--date FILE','location of date executeable (default: /bin/date)') do |file|
-			$options[:locdate] = file
+		#Database timeout
+		$options[:retry_limit] = 5
+		opts.on('-R','--retry_limit RETRYLIMIT','Number of retries before we give up completely (default: 5)') do |rl|
+			$options[:retry_limit] = rl
 		end
 
 		#DB host
 		$options[:dbserver] = "http://internal1.orbit-lab.org:5054/inventory/"
-		opts.on('-R','--restdb server','name of the Restfull Database server') do |server|
+		opts.on('-r','--restdb server','name of the Restfull Database server') do |server|
 			$options[:dbserver] = server
 		end
 
@@ -684,6 +640,66 @@ if __FILE__ == $0
 		$options[:prefix] = "INV_"
 		opts.on('-p','--prefix TXT','Attribute PREFIX (Default = INV_)') do |prefix|
 			$options[:prefix] = prefix
+		end
+
+		#Primary disk name 
+		$options[:locdiskdev] = '/dev/sda'
+		opts.on('--diskdev FILE','location of Disk Device (default: /dev/sda)') do |file|
+			$options[:locdiskdev] = file
+		end
+
+		#Smartmontool location
+		$options[:loclsmart] = '/usr/sbin/smartctl'
+		opts.on('--smrt FILE','location of smartctl executeable (default: /usr/sbin/smartctl)') do |file|
+			$options[:loclsmart] = file
+		end
+
+		#LSHW location
+		$options[:loclshw] = '/usr/bin/lshw'
+		opts.on('--lshw FILE','location of lshw executeable (default: /usr/bin/lshw)') do |file|
+			$options[:loclshw] = file
+		end
+
+		#LSUSB location
+		$options[:loclsusb] = '/usr/bin/lsusb'
+		opts.on('--lsusb FILE','location of lsusb executeable (default: /usr/sbin/lsusb)') do |file|
+			$options[:loclsusb] = file
+		end
+
+		#Sysbench location
+		$options[:locbench] = '/usr/bin/sysbench'
+		opts.on('--bench FILE','location of sysbench executeable (default: /usr/bin/sysbench)') do |file|
+			$options[:locbench] = file
+		end
+
+		#ifconfig location
+		$options[:locifconfig] = '/sbin/ifconfig'
+		opts.on('--ifcon FILE','location of ifconfig (default: /sbin/ifconfig)') do |file|
+			$options[:locifconfig] = file
+		end
+
+		#ping location
+		$options[:locping] = '/bin/ping'
+		opts.on('--ping FILE','location of ping (default: /bin/ping)') do |file|
+			$options[:locping] = file
+		end
+
+		#uhd location
+		$options[:locuhd] = '/usr/local/bin/uhd_usrp_probe'
+		opts.on('--uhd FILE','location of uhd usrp probe binary (default: /usr/local/bin/uhd_usrp_probe)') do |file|
+			$options[:locuhd] = file
+		end
+
+		#HOSTNAME location
+		$options[:lochostname] = '/bin/hostname'
+		opts.on('--hostname FILE','location of hostname executeable (default: /bin/hostname)') do |file|
+			$options[:lochostname] = file
+		end
+
+		#HOSTNAME location
+		$options[:locdate] = '/bin/date'
+		opts.on('--date FILE','location of date executeable (default: /bin/date)') do |file|
+			$options[:locdate] = file
 		end
 
 		# This displays the help screen, all programs are
@@ -712,7 +728,7 @@ if __FILE__ == $0
 		nd = NodeData.instance
 	
 		#now that we know the fqdn, we can make a DBhleper	
-		db = DBhelper.new($options[:dbserver],nd.fqdn,$options[:prefix],$options[:timeout])
+		db = DBhelper.new($options[:dbserver],nd.fqdn,$options[:prefix],$options[:timeout],$options[:retry_limit],$options[:stagger])
 		
 		#we want to reset the node state so that it's ready to accept new data
 		log.info("Main: Dumping #{$options[:prefix]} attributes for #{nd.fqdn}")
@@ -742,6 +758,16 @@ if __FILE__ == $0
 		#then use that db helper to checkin
 		log.info("Main: Checking in")
 		db.check_in(nd.now)
+
+	rescue Exception => e
+		log.fatal("Can't Continue, sending email")
+		msgstr = "
+From: 'root@#{nd.fqdn}'
+To: root@orbit-lab.org
+Subject: Fatal Inventory 
+Error Hi, #{nd.fqdn} encountered a fatal error. Message was \n #{e.class} \n #{e.message}
+"
+		Net::SMTP.start('email.orbit-lab.org', 25) { |smtp| smtp.send_message msgstr, "root@#{nd.fqdn}", "root@orbit-lab.org"}
 
 	ensure	
 		#Must close connection reguardless of results. 

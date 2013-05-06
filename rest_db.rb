@@ -95,7 +95,7 @@ end
 
 class Database
 	#Container for the live object rest api
-	def initialize(host,loc_timeout = 120 ,retry_limit = 5, stagger = 2)
+	def initialize(host,loc_timeout = 120 ,retry_limit = 5, stagger = 0)
 		@log = LOG.instance
 
 		#the prefix value is what the del_all_attr method uses to filter records. It must be set, and any attributes submitted to the add method will be checked for this prefix.
@@ -379,6 +379,16 @@ class Database
 				result = resource.get
 			else
 				result = resource.get :params => params
+			end
+		rescue Errno::ECONNRESET => e
+			if retries > @retry_limit
+				@log.fatal("Database: Conection reset to many times to  #{host}")
+				raise
+			else
+				@log.warn("Database: Database connection reset on attempt  #{retries} \n #{e.message}")
+				sleep rand(10)
+				retries += 1
+				retry
 			end
 		rescue RestClient::RequestTimeout => e
 			if retries > @retry_limit
