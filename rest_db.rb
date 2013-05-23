@@ -107,10 +107,12 @@ class Database
 		@retry_limit = retry_limit
 		@stagger = stagger
 
+		@total_request_time = 0
+		@request_count = 0
+
 
 		begin
-			resource  = RestClient::Resource.new host, :timeout => @timeout, :open_timeout => @timeout
-			connect = resource.get
+			connect = call_rest(@host)
 			@log.info("Database: Restfull DB connected to #{@host}")
 			@log.debug("Database: with code: #{connect.code} \ncookies: #{connect.cookies} \nheaders: #{connect.headers}")
 		rescue
@@ -119,6 +121,8 @@ class Database
 		end
 
 	end
+
+	attr_reader :total_request_time, :request_count
 
 	def set_prefix(prefix)
 		# set the prefix 
@@ -374,12 +378,19 @@ class Database
 		end
 
 		begin
+			beginning_time = Time.now
 			resource  = RestClient::Resource.new host, :timeout => @timeout, :open_timeout => @timeout
 			if params.nil?
 				result = resource.get
 			else
 				result = resource.get :params => params
 			end
+			end_time = Time.now
+
+			# collecting connection stastics
+			@total_request_time += ((end_time - beginning_time)*1000)
+			@request_count += 1
+
 		rescue Errno::ECONNRESET => e
 			if retries > @retry_limit
 				@log.fatal("Database: Conection reset to many times to  #{host}")
@@ -391,6 +402,16 @@ class Database
 				retry
 			end
 		rescue RestClient::RequestTimeout => e
+			if retries > @retry_limit
+				@log.fatal("Database: Could not connet to DB server #{host}")
+				raise
+			else
+				@log.warn("Database: Database connection timedout, attempt  #{retries} \n #{e.message}")
+				sleep rand(10)
+				retries += 1
+				retry
+			end
+		rescue Errno::ETIMEDOUT => e
 			if retries > @retry_limit
 				@log.fatal("Database: Could not connet to DB server #{host}")
 				raise
