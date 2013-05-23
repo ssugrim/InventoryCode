@@ -129,6 +129,7 @@ class DBhelper
 		#resouce is the resource to have it attrbutes dumped
 		begin
 			return @db.del_all_attr(resource)
+			#TODO this error is sometimes generated erroenously
 		rescue DelAttrError => e
 			if e.message.match(/No resource\/attribute match/).nil?
 				raise
@@ -186,7 +187,7 @@ class NodeData
 		begin
 			#collect  System data
 			@log  = LOG.instance
-			@fqdn = Tools.run_cmd("#{$options[:lochostname]} --all-fqdns").readlines.join(" ").chomp.strip
+			@fqdn = Tools.run_cmd("#{$options[:lochostname]} --all-fqdns").readlines.join(" ").scan(/(.*?\.orbit-lab.org)/).flatten.first
 			@now = Tools.run_cmd( "#{$options[:locdate]} +'%T;%D'").readlines.join.split(";").join(" ").chomp.strip
 			@log.debug("Os said the fqdn was #{@fqdn}, and the date/time is #{@now}")
 			md = @fqdn.match(/node(\d+)-(\d+)./)
@@ -219,6 +220,16 @@ class LshwData
 	end
 
 	attr_reader :data, :flag 
+end
+
+class LspciData
+	def initialize()
+	#Returns an Array of lines from lspci output, numeric id's of all attached pci devices
+		@log  = LOG.instance
+		@data = Tools.run_cmd("#{$options[:loclspci]} -n").readlines.join(" ").scan(/\s?(\w{4}):(\w{4})\s?/)
+		@log.debug("Lspcidata: found #{@data.length} hits")
+	end
+	attr_reader :data
 end
 
 class LsusbData
@@ -593,6 +604,25 @@ class USRP
 	end
 end
 
+class NetFPGA
+	#container class since there may be more than one datum, but they should all be updated via a single cmd
+	def initialize()
+		@log=LOG.instance
+		@lspci_data = LspciData.new()
+	end
+
+	def update(db)
+		if @lspci_data.data.select{|x| x.first.include?("feed")}.empty?
+			@log.warn("No Netfpga found")
+			return nil 
+		end
+		dev_name = db.add_dev()
+		s0 = db.add_attr(dev_name,"dev_id",@lspci_data.data.select{|x| x.first.include?("feed")}.join(":"))
+		s1 = db.add_attr(dev_name,"dev_type","NetFpga 1G")
+		return ["Dev added #{dev_name}",s0,s1].flatten.join(" ")
+	end
+end
+
 
 if __FILE__ == $0
 	$options = Hash.new()
@@ -652,6 +682,12 @@ if __FILE__ == $0
 		$options[:loclsmart] = '/usr/sbin/smartctl'
 		opts.on('--smrt FILE','location of smartctl executeable (default: /usr/sbin/smartctl)') do |file|
 			$options[:loclsmart] = file
+		end
+
+		#LSPCI location
+		$options[:loclspci] = '/usr/bin/lspci'
+		opts.on('--lspci FILE','location of lspci executeable (default: /usr/bin/lspci)') do |file|
+			$options[:loclspci] = file
 		end
 
 		#LSHW location
@@ -755,11 +791,17 @@ if __FILE__ == $0
 		usrp.update(db)
 		log.info("Main: USRP data update complete")
 
+		#update netfpga
+		netfpga = NetFPGA.new()
+		netfpga.update(db)
+		log.info("Main: NetFPGA data update complete")
+
 		#then use that db helper to checkin
 		log.info("Main: Checking in")
 		db.check_in(nd.now)
 
 	rescue Exception => e
+		puts e
 		log.fatal("Can't Continue, sending email")
 		msgstr = "
 From: 'root@#{nd.fqdn}'
