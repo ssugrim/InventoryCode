@@ -393,6 +393,10 @@ class USRPData
 				[str, "FFFE:0007"]
 			elsif str.include?("WBX, WBX + Simple GDB")
 				[str, "FFFE:0008"]
+			elsif str.include?("WBX v3, WBX v3 + Simple GDB")
+				[str, "FFFE:0009"]
+			elsif str.include?("WBX v3")
+				[str, "FFFE:0010"]
 			else 
 				[str, "FFFE:0001"]
 			end

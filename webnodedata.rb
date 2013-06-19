@@ -10,11 +10,12 @@ class WebNodeData
 		@log  = LOG.instance
 		
 		#all the data fromt he restDB for this given fqdn
-		db = Database.new(host, "INV_")
-		@nodes = db.get_all_node(fqdn)
+		db = Database.new(host)
+
+		@nodes = db.get_attr(fqdn)
 
 		#all the possible headers expect name
-		@headers = @nodes.inject(Array.new){|s,c| s.push(c.map{|x| x.first})}.flatten.uniq.reject{|x| x == "name"}.sort
+		@headers = @nodes.map{|x| x[1] }.map{|y| y.map{|z| z.first}}.flatten.uniq.reject{|x| x == "name"}.sort
 
 		#all the names
 		@names = @nodes.flatten.join(" ").scan(/(node\d+-\d+\.#{fqdn})/).flatten
@@ -30,5 +31,5 @@ end
 
 
 if __FILE__ == $0
-	puts WebNodeData.new("http://internal1.orbit-lab.org:5054/inventory/","grid.orbit-lab.org").headers
+	puts WebNodeData.new("http://internal1.orbit-lab.org:5054/inventory/","*grid.orbit-lab.org*").headers
 end

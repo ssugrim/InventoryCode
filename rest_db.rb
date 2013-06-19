@@ -99,7 +99,7 @@ class Database
 		@log = LOG.instance
 
 		#the prefix value is what the del_all_attr method uses to filter records. It must be set, and any attributes submitted to the add method will be checked for this prefix.
-		@prefix = nil
+		@prefix = "INV_"
 
 		#By default this should be "http://internal1.orbit-lab.org:5054/inventory/"
 		@host = host
@@ -223,14 +223,14 @@ class Database
 		host  = @host + "attribute_add"
 
 		begin
+			@log.debug("Database: setting resource #{resource} to  #{name}=#{value}")
 			result = call_rest(host, {:name => resource, :attribute => name, :value => value})
-			@log.debug("Database: Resource #{resource} had #{name}=#{value} set  with result  #{result.to_str}")
 			raise AddAttrError, result.to_str unless result.to_str.scan(/ERROR/).empty?
 		rescue AddAttrError
-			@log.debug("Database: Attribute addition failed with error \n #{result.to_str}")
+			@log.debug("Database: Attribute addition failed with error \n #{result.to_str}, Values were: name = #{resource}, attribute = #{name}, value = #{value}")
 			raise
-		rescue
-			@log.fatal("Database: Attribute addition failed")
+		rescue Exception => e
+			@log.fatal("Database: Attribute addition failed with error #{e}")
 			raise
 		end
 		return result
