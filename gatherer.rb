@@ -187,7 +187,7 @@ class NodeData
 		begin
 			#collect  System data
 			@log  = LOG.instance
-			@fqdn = Tools.run_cmd("#{$options[:lochostname]} --all-fqdns").readlines.join(" ").scan(/(.*?\.orbit-lab.org)/).flatten.first
+			@fqdn = Tools.run_cmd("#{$options[:lochostname]} --all-fqdns").readlines.join(" ").scan(/(.*?\.orbit-lab.org)/).flatten.last.strip
 			@now = Tools.run_cmd( "#{$options[:locdate]} +'%T;%D'").readlines.join.split(";").join(" ").chomp.strip
 			@log.debug("Os said the fqdn was #{@fqdn}, and the date/time is #{@now}")
 			md = @fqdn.match(/node(\d+)-(\d+)./)
