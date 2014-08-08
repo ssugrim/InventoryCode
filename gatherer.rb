@@ -1,15 +1,17 @@
-#!/usr/bin/ruby1.8 -w
-# gatherer.rb version 3.9 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
+#!/usr/bin/ruby 
+# gatherer.rb version 4.3 - Gathers information about varius system data, and updates the web based inventory via a Rest wrapper.
 #
-#Smart support, upadted restdb interface with time out support
+#Made the network container a factory and the USRP a Strtegy. Included x310 support 
 
 require 'optparse'
 require 'open3'
 require 'find'
 require 'singleton'
-require 'log_wrap'
-require 'rest_db'
 require 'net/smtp'
+
+
+require_relative 'log_wrap'
+require_relative 'rest_db'
 
 #Some Custom Errors
 
@@ -55,19 +57,19 @@ class Tools
 			#run command with popen3
 			stdin, stdout, stderr = Open3.popen3(cmd)
 			#collect any stderr
-			error = stderr.readlines.join(" ")
+			error = stderr.readlines.map{|x| x.strip}.join(" ")
 
 			#raise an exception if the binary is not found 
-			raise BinaryNotFound.new("#{cmd} failed",cmd) unless error.scan("No such file or directory").empty?
+			raise BinaryNotFound.new("#{cmd} failed",cmd) if error.include?("No such file or directory")
 
 			#raise exception if there is any error output
 			raise ExecError.new("Exec Error",cmd, error) unless error.empty?
 		rescue BinaryNotFound => e
-			@@log.fatal("Tools.run_cmd: #{e.class} #{e.message} \n #{e.cmd}")
-			@@log.fatal("Tools.run_cmd: called by #{e.caller}")
+			@@log.warn("Tools.run_cmd: #{e.class} #{e.message} \n #{e.cmd}")
+			@@log.warn("Tools.run_cmd: called by #{e.caller}")
 			raise
 		rescue ExecError => e
-			@@log.fatal("Tools.run_cmd: Execution error\n#{e.error} \n in command \n #{e.cmd}") 
+			@@log.warn("Tools.run_cmd: Execution error\n#{e.error} \n in command \n #{e.cmd}") 
 			raise
 		end
 		return stdout
@@ -209,14 +211,26 @@ class LshwData
 
 		@flag = flag
 		@log  = LOG.instance
-	
-		#A recursive lambda function the returns flat level of 2 tuples for any level of nesting
-		#It checks if an element is lenght 2 and does not contain arrays. Passing this check will cause the element to be stored, failing will cause a recursive call.
-		tuples = lambda {|store,current| current.length == 2 and current.select{|dummy| dummy.class == Array}.empty? ? store.push(current) : current.each{|future| tuples.call(store,future)}}
-
 
 		@data = Tools.run_cmd("#{$options[:loclshw]} -numeric -c #{@flag}").readlines.join(" ").split(/\*-/).map{|str| str.scan(/(\S.*?):(.*$)/)}.select{|arr| !arr.empty?}
 		@log.debug("LshwData: found #{@data.length} hits for flag #{@flag}")
+	end
+
+	attr_reader :data, :flag 
+end
+
+class LshwDataRaw
+	def initialize(flag)
+		#Arugments: 
+		#Flag - what device class to pass to lshw (see lshw webpage)  - Mandatory
+		#Returns out put of lshw -c flag as a single string with no newlines
+		#Instead of generic key value pairs, this class will be used to file the lshw string with specif regex and search for specifc key words
+
+		@flag = flag
+		@log  = LOG.instance
+
+		@data = Tools.run_cmd("#{$options[:loclshw]} -numeric -c #{@flag}").readlines.map{|x| x.strip}.join(" ")
+		@log.debug("LshwDataRaw: found #{@data.length} for flag #{@flag}")
 	end
 
 	attr_reader :data, :flag 
@@ -242,7 +256,38 @@ class LsusbData
 	attr_reader :data
 end
 
+class LsusbDataRaw
+	def initialize()
+	#Returns an Array of lines from lsusb output
+		@log  = LOG.instance
+		@data = Tools.run_cmd("#{$options[:loclsusb]}").readlines
+		@log.debug("LsusbDataRaw.new: found #{@data.length} lines")
+	end
+	attr_reader :data
+end
+
+class IfaceContainer
+	#A containter class for getting new interface objects. Enforces the One name per object rule
+	#TODO make this a porper factory
+	@@log = LOG.instance
+	@@ifaces = Array.new()
+
+	def self.get_iface(name)
+		iface =  @@ifaces.detect{|x| x.name.include?(name)}
+		if iface.nil?
+			iface = Interface.new(name)
+			@@ifaces.push(iface)
+			@@log.debug("IfaceContainer.get_iface: Made an new iface #{name}, currently we have #{@@ifaces.map{|x| x.name}.join(" ")}")
+			return iface
+		else
+			@@log.debug("IfaceContainer.get_iface: Already had an #{name}")
+			return iface
+		end
+	end
+end
+
 class Interface
+	#TODO should not be able to instantiate this directly make this a factory pattern
 	def initialize(name)
 		#name, ip and netmask are string, the name of the intefrace refers to the expected enmeration name (usually "eth" something). The ip and netmask 
 		#should be in dot quad notation, but as a string. Up is a bool, true if the interface is determined to be up
@@ -251,13 +296,14 @@ class Interface
 		@up = false
 		@ip = nil
 		@netmask = nil
+		@module = nil
+		@mtu = nil
 
 		#check if the interface exists
-		raise InterfaceDoesNotExist.new("Interface does not exits",name) if Tools.run_cmd("#{$options[:locifconfig]} -a").readlines.join.scan(name).empty?
 		check_up()
 	end
 
-	attr_reader :name,:up,:ip,:netmask
+	attr_reader :name,:up,:ip,:netmask,:module,:mtu
 
 	def check_up()
 		#check if interface is up, or and if it has an address
@@ -266,15 +312,40 @@ class Interface
 		@netmask = nil
 
 		ifcondata = Tools.run_cmd("#{$options[:locifconfig]}").readlines.join
-		@up = true unless ifcondata.scan(@name).empty?
+		@up = true if ifcondata.include?(@name)
 		@ip,@netmask = ifcondata.match(/#{Regexp.escape(@name)}.*?inet addr:(\d+.\d+.\d+.\d+).*?Mask:(\d+.\d+.\d+.\d+)/m).captures if @up
 		return @up
 	end
 
-	def set_ip(ip,netmask)
+	def set_ip(ip="192.168.10.1",netmask="255.255.255.0")
 		#set the ip address and netmask, should bring the interface up if it is down.
+		raise InterfaceDoesNotExist.new("Interface does not exits",name) unless Tools.run_cmd("#{$options[:locifconfig]} -a").readlines.join.include?(name)
 		Tools.run_cmd("#{$options[:locifconfig]} #{@name} #{ip} netmask #{netmask}")
+		@log.debug("Interface.set_ip: Set IP to #{ip} and netmask to #{netmask}")
 		check_up()
+	end
+
+	def set_mtu(mtu="1500")
+		@mtu = mtu
+		#set the mtu of an inteface 
+		raise InterfaceDoesNotExist.new("Interface does not exits",name) unless Tools.run_cmd("#{$options[:locifconfig]} -a").readlines.join.include?(name)
+		Tools.run_cmd("#{$options[:locifconfig]} #{@name} mtu #{@mtu}")
+		@log.debug("Interface.set_mtu: Mtu set to #{@mtu}")
+		check_up()
+	end
+
+	def load_module(mod = "mlx4_en")
+		#Loads the module via modprobe, and recrods the name for future refrence
+		@module = mod
+		Tools.run_cmd("#{$options[:locmodprobe]} #{@module}")
+		@log.debug("Interface.load_modle: Loaded Module #{@module}")
+	end
+
+	def set_kflag()
+		#Loads the module via modprobe, and recrods the name for future refrence
+		Tools.run_cmd("#{$options[:locsysctl]} -w net.core.rmem_max=50000000")
+		Tools.run_cmd("#{$options[:locsysctl]} -w net.core.wmem_max=1048576")
+		@log.debug("Interface.set_kflag: Flags set")
 	end
 end
 
@@ -283,8 +354,8 @@ class PingData
 	def initialize()
 		@log  = LOG.instance
 		#get the current eth1 ip
-		if1 = Interface.new("eth1")	
-		eth1_ip = if1.ip.match(/(\d+).(\d+).(\d+).(\d+)/).captures
+		iface1 = IfaceContainer.get_iface("eth1")	
+		eth1_ip = iface1.ip.match(/(\d+).(\d+).(\d+).(\d+)/).captures
 		@log.debug("PingData: eth1 address #{eth1_ip.join(".")}")
 
 		#set the eth0 ip, eth0's ip should be eth1's ip with the second quad incremented by 10 unless it's over 40, then increment by 1
@@ -299,8 +370,8 @@ class PingData
 				eth1_ip[i].to_i
 			end
 		}
-		if0 = Interface.new("eth0")
-		if0.set_ip(eth0_ip.join("."),"255.255.0.0")
+		iface0 = IfaceContainer.get_iface("eth0")
+		iface0.set_ip(eth0_ip.join("."),"255.255.0.0")
 
 
 		@log.debug("PingData: eth0 address #{eth0_ip.join(".")}")
@@ -328,36 +399,155 @@ end
 
 class USRPData
 	#Data about attached USRP's collected from the UHD
+	#this is a stratgey template
 	def initialize()
 		@log = LOG.instance
-		@type =  nil
-		@serial = nil
-		@uhd_version = nil
-		@daughters = nil
-		@id = nil
-		if2 = nil
+		@iface = IfaceContainer.get_iface("eth2")
+		@raw_data = nil
+		@data = nil
+	end
 
-		begin
-			#set the communciation interface ip through which we talk to the usrp
-			if2 = Interface.new("eth2")
-			if2.set_ip("192.168.10.1","255.255.255.0")
-		rescue InterfaceDoesNotExist => e
-			#there may be no eth2 in the case of USRP1, so this is not a critical error
-			@log.warn("Was not able to find interface #{e.name}")
+	attr_reader :data, :raw_data
+
+	def pop_data()
+		#this should remain common to all classes so that we get the same address out and the process is common to all of them
+		unless @raw_data.nil?
+			@data = Hash.new
+			@data[:uhd_version] = @raw_data.scan(/(UHD_.*$)/).flatten.first.strip
+			@data[:type] = @raw_data.scan(/Device:\s+(.*)$/).flatten.first.strip
+			@data[:serial] = @raw_data.scan(/serial:\s+(.*)$/).flatten.first.strip 
+			@data[:mboard] = @raw_data.scan(/Mboard:\s+(.*)$/).flatten.first.strip
+
+			case
+			when @data[:mboard].include?("USRP1")
+				@data[:id] = "FFFE:0002"
+			when @data[:mboard].include?("USRP2")
+				@data[:id] = "FFFE:0003"
+			when @data[:mboard].include?("N210")
+				@data[:id] = "FFFE:0004"
+			when @data[:mboard].include?("X310")
+				@data[:id] = "FFFE:0005"
+			else
+				@data[:id] = "FFFE:0000"
+			end
+
+			daughters = @raw_data.scan(/ID:\s+(.*?)\s+\(/).uniq.map{|arr|
+			str = arr.flatten.first
+			if str.include?("XCVR2450")
+				[str, "FFFD:0001"]
+			elsif str.include?("WBX")
+				[str, "FFFD:0002"]
+				#this is a hack to prevent mislabeling of sbx-120
+			elsif str.include?("SBX-120")
+				[str, "FFFD:0007"]
+			elsif str.include?("SBX")
+				[str, "FFFD:0003"]
+			elsif str.include?("WBX, WBX + Simple GDB")
+				[str, "FFFD:0004"]
+			elsif str.include?("WBX v3, WBX v3 + Simple GDB")
+				[str, "FFFD:0005"]
+			elsif str.include?("WBX v3")
+				[str, "FFFD:0006"]
+			elsif str.include?("CBX-120")
+				[str, "FFFD:0008"]
+			else 
+				[str, "FFFD:0001"]
+			end
+			}
+
+			@data[:daughters] = daughters
 		end
+	end
+end
 
-		data = nil
+class USRPData1G <  USRPData
+	#check for USRP's connect to 1G ethernet. It's expected that they take on a 10.2 address 
+	def initialize()
+		super
+		begin
+			@iface.set_ip("192.168.10.1","255.255.255.0")
+			@iface.set_kflag
+			retries = 0
+			begin
+				#locate the usrp using the uhd_usrp_probe, this may require a couple of tries
+				@raw_data = Tools.run_cmd("#{$options[:locuhd]} --args addr=192.168.10.2").readlines.join("\n")
+				return true
+			rescue ExecError => e
+				#if no uhd was found, output will goto stderr and will trigger an ExecError. 
+				#if we see these keys words we should try again
+				if e.error.include?("No devices found") or e.error.include?("UHD Error")
+					if retries > 3
+						@log.debug("USRPData1G.new: No 1G USRP found")
+					else
+						@log.debug("USRPData1G.new: Failed to find usrp on try #{retries}")
+						sleep(10)
+						retries += 1
+						retry
+					end
+				else
+					raise
+				end
+			end
+		rescue InterfaceDoesNotExist => e
+			@log.warn("USRPData1G.new: Was not able to find interface #{e.name}")
+		end
+		return false
+	end
+end
+
+class USRPData10G <  USRPData
+	#check for USRP's connect to 10G ethernet. It's expected that they take on a 40.2 address 
+	def initialize()
+		super
+		begin
+			retries = 0
+			@iface.load_module("mlx4_en")
+			@iface.set_ip("192.168.40.1","255.255.255.0")
+			@iface.set_mtu("9000")
+			begin
+				#locate the usrp using the uhd_usrp_probe, this may require a couple of tries
+				@raw_data = Tools.run_cmd("#{$options[:locuhd]} --args addr=192.168.40.2").readlines.join("\n")
+				return true
+			rescue ExecError => e
+				#if no uhd was found, output will goto stderr and will trigger an ExecError. 
+				if e.error.include?("No devices found")
+					if retries > 3
+						@log.debug("USRPData10G.new: No 10G USRP found")
+					else
+						@log.debug("USRPData10G.new: Failed to find usrp on try #{retries}")
+						sleep(10)
+						retries += 1
+						retry
+					end
+				else
+					raise
+				end
+			end
+		rescue InterfaceDoesNotExist => e
+			@log.warn("USRPData10g.new: Was not able to find interface #{e.name}")
+		end
+		return false
+	end
+end
+
+class USRPDataUSB <  USRPData
+	#check for USRP's connect via USB.
+	def initialize()
+		@log = LOG.instance
+		@raw_data = nil
+		@data = nil
 		retries = 0
 		begin
 			#locate the usrp using the uhd_usrp_probe, this may require a couple of tries
-			data = Tools.run_cmd("#{$options[:locuhd]}").readlines.join("\n")
+			@raw_data = Tools.run_cmd("#{$options[:locuhd]}").readlines.join("\n")
+			return true
 		rescue ExecError => e
 			#if no uhd was found, output will goto stderr and will trigger an ExecError. 
-			if e.error.scan("No devices found")
+			if e.error.include?("No devices found")
 				if retries > 3
-					@log.debug("No USRP found")
+					@log.debug("USRPDataUSB.new: No USB USRP found")
 				else
-					@log.debug("Failed to find usrp on try #{retries}")
+					@log.debug("USRPDataUSB.new: Failed to find usrp on try #{retries}")
 					sleep(10)
 					retries += 1
 					retry
@@ -366,45 +556,10 @@ class USRPData
 				raise
 			end
 		end
-
-		unless data.nil?
-			@uhd_version = data.scan(/(UHD_.*$)/)
-			@type = data.scan(/Device:\s+(.*)$/)
-			@serial = data.scan(/serial:\s+(.*)$/)
-
-			@mboard = data.scan(/Mboard:\s+(.*)$/)
-			case
-			when @mboard.join.include?("USRP1")
-				@id = "FFFE:0002"
-			when @mboard.join.include?("USRP2")
-				@id = "FFFE:0003"
-			when @mboard.join.include?("N210")
-				@id = "FFFE:0004"
-			else
-				@id = "FFFE:0000"
-			end
-
-			@daughters = data.scan(/ID:\s+(.*?)\s+\(/).uniq.map{|str|
-			if str.include?("XCVR2450")
-				[str, "FFFE:0005"]
-			elsif str.include?("WBX")
-				[str, "FFFE:0006"]
-			elsif str.include?("SBX")
-				[str, "FFFE:0007"]
-			elsif str.include?("WBX, WBX + Simple GDB")
-				[str, "FFFE:0008"]
-			elsif str.include?("WBX v3, WBX v3 + Simple GDB")
-				[str, "FFFE:0009"]
-			elsif str.include?("WBX v3")
-				[str, "FFFE:0010"]
-			else 
-				[str, "FFFE:0001"]
-			end
-			}
-		end
+		return false
 	end
-	attr_reader :type,:serial,:daughters,:uhd_version,:id
 end
+
 
 class BenchData
 	#benchmark data
@@ -445,6 +600,10 @@ class System
 		#extract the Memory Size
 		mem = LshwData.new("memory").data.select{|x| Tools.contains?("System Memory",x)}
 		@memory = get_data.call("size",mem)
+		if @memory.nil?
+			@memory = Tools.run_cmd("#{$options[:locfree]} -g").readlines.join.scan(/Mem:\s*(\d*)/).flatten.first + " GB"
+			@log.debug("System.new: Lshw mem check failed, free things memory is #{@memory}")
+		end
 
 		#extract the CPU clock speed and product string
 		#TODO figure out how to count CPU's
@@ -492,50 +651,50 @@ class Network
 	def initialize()
 		@log=LOG.instance
 
-		get_data = lambda {|name, array| 
-			data =  Tools.dig(name,array).flatten.last
-			data.nil? ? nil : data.strip
+		@interfaces = Hash.new
+		
+		#Split the single combined lshw line along the network boundaries
+		net = LshwDataRaw.new("network").data.split(/\*\-network/)
+		
+		#Each string in the array should map to single network device. Extract the relevant info with very specific regex
+		net.each{|x|
+			#the product keyword is our primary identifier, with out it, we have no idea what kind of device it is
+			k = x.scan(/product:\s(.*?)\svendor/).flatten.first
+			#this should keep on tacking on duplicates if the device has several mac's
+			k = "Duplicate " + k if @interfaces.has_key?(k) 
+
+			#the mac is optional and may be nil (espically if no module was loaded)	
+			mac = x.scan(/serial:\s(\w\w:\w\w:\w\w:\w\w:\w\w:\w\w)/).flatten.first
+
+			#same for the ifname
+			if_name = x.scan(/logical\sname:\s(\w*?)\s/).flatten.first
+			
+			unless k.nil?
+				#the dev_id comes from the product string (when lshw is invoked with the numeric flag). but may need a hex conversion
+				dev_id = k.scan(/(\S{1,4}):(\S{1,4})/).flatten.map{|y| sprintf("%04X",y.hex)}.join(":")
+				interfaces.store(k, {:dev_id => dev_id, :if_mac => mac, :if_name => if_name})
+			end
 		}
 
-		net = LshwData.new("network")
-		#collect mac address by diging the serial keword then rejecting the actual word serial (since we're flattening the tuples).
-		macs =  Tools.dig("serial",net.data).flatten.reject{|x| x.match(/serial/)}.map{|x| x.strip}
-
-		#pair the mac with the array of extracted data it came from
-		rawdata = macs.map{|mac| [mac,Tools.tuples(net.data.select{|arr| Tools.contains?(mac,arr)})]}
-
-		#extract out the chipset identifcation information
-		ifdata = rawdata.map{|x| 
-			prod_data = get_data.call("product",x[1])
-			if prod_data.nil?
-				@log.debug("Network.initialize: Couldn't get product id for #{x[0]}, dropping it")
-				nil
-			else
-				[x[0], get_data.call("logical name",x[1]), get_data.call("vendor",x[1]), prod_data]
-			end
-		}.compact
-
-		#lambda to convert nils to empty strings and strip off white spaces
-		str_cln = lambda {|x| if x.nil? then  return String.new() else  return x.strip end }
-
-		#lambda to extract vendor/product tags as a 4 digit hex
-		#Note, this will throw a nil exception if it finds a mac, but not a product description with numeric identifier
-		get_id = lambda {|x| return x.match(/(\S{1,4}):(\S{1,4})/).captures.map{|y| sprintf("%04X",y.hex)}.join(":")}
-		
-		#apply lambdas to each interface
-		@interfaces = ifdata.map{|x| [x[0], str_cln.call(x[1]), str_cln.call(x[2]), str_cln.call(x[3]), get_id.call(x[3])]}
 	end
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DBa
-		return @interfaces.map{|x| 
+		s = String.new
+		@interfaces.each{|k,v| 
+			#add a new device for each interface we found
 			dev_name = db.add_dev()
-			s1 = db.add_attr(dev_name,"if_mac",x[0])
-		       	s2 = db.add_attr(dev_name,"if_name",x[1])
-			s3 = db.add_attr(dev_name,"dev_type",x[2] + x[3])
-			s4 = db.add_attr(dev_name,"dev_id",x[4]) 
-			["Dev added #{dev_name}",s1,s2,s3,s4].join(" ")
-		}.join(" ")
+			
+			#these have return values but we're discarding them because they are reported in the DB tools anyway.
+			db.add_attr(dev_name,"if_mac",v[:if_mac],)
+		       	db.add_attr(dev_name,"if_name",v[:if_name])
+			db.add_attr(dev_name,"dev_type",k)
+			db.add_attr(dev_name,"dev_id",v[:dev_id]) 
+			
+			s += "Dev added #{dev_name} "
+		}
+		#for debug output message
+		return s
 	end
 
 	attr_reader :interfaces
@@ -549,11 +708,32 @@ class USB
 		@devices = nil
 		#extract usb data
 		#there should be any multi level nesting, drop any kvm or Internal USB hub records
-		rawdata	=  LsusbData.new().data.reject{|x| Tools.contains?("ATEN International",x) or Tools.contains?("Linux Foundation",x) or Tools.contains?("Intel Corp. Integrated Rate Matching Hub",x)  or Tools.contains?("FFFE:0002",x) or Tools.contains?("fffe:0002",x)}
+
+		filter_str =[
+			"ATEN International",
+			"Linux Foundation",
+			"Intel Corp. Integrated Rate Matching Hub",
+			"FFFE:0002",
+			"fffe:0002",
+			"Intel Corp."
+		#	"IMC Networks"
+		]
+				
+		rawdata	=  LsusbDataRaw.new().data.reject{|x| filter_str.map{|y| x.include?(y)}.include?(true)}.map{|x| x.strip}
+
+
 		#all we care about are the device names, lsusb output should be fairly constant
 		unless rawdata.empty?
-			@devices = Tools.tuples(rawdata)
-			@log.debug("USB: Actual devices found: #{@devices.length}. They are:\n#{@devices.join("\n")}")
+			@devices = Hash.new
+			rawdata.each{|x|
+				#this regexp will extract the dev id, and a meaninful name 
+				v,k = x.scan(/ID\s(\S{1,4}:\S{1,4})(.*?)$/).first
+				@log.debug("Found #{k} with #{v}")
+				@devices.store(k,v) unless k.nil? or v.nil?
+			}
+			@log.debug("USB.new: Actual devices found: #{@devices.length}. They are:\n#{@devices.keys.join("\n")}")
+		else
+			@log.debug("USB.new: No USB dev's found")
 		end
 	end
 
@@ -563,48 +743,78 @@ class USB
 			@log.debug("USB: Nothing to update")
 			return nil
 		else
-			#lambda to extract vendor/product tags as a 4 digit hex
-			#Note, this will throw a nil exception if it finds a mac, but not a product description with numeric identifier
-			get_id = lambda {|x| return x.match(/(\S{1,4}):(\S{1,4})/).captures.map{|y| sprintf("%04X",y.hex)}.join(":")}
-
-			#lambda to convert nils to empty strings and strip off white spaces
-			#TODO make str_cln part of the Tools class
-			str_cln = lambda {|x| if x.nil? then  return String.new() else  return x.strip end }
-
-			return @devices.map{|x| 
+			#debug output string
+			s = String.new
+			@devices.each{|k,v| 
 				dev_name = db.add_dev()
-				s1 = db.add_attr(dev_name,"dev_type",str_cln.call(x[1]))
-				s2 = db.add_attr(dev_name,"dev_id",get_id.call(x[0]))
-				["Dev added #{dev_name}",s1,s2].join(" ")
+				s += "Dev added #{dev_name} "
+				#remove any trailing white space and convert the address to hex (if needed)
+				dev_id = v.scan(/(\S{1,4}):(\S{1,4})/).flatten.map{|y| sprintf("%04X",y.hex)}.join(":")
+
+				s += db.add_attr(dev_name,"dev_type",k)
+				s += db.add_attr(dev_name,"dev_id",dev_id)
 			}
+			return s
 		end
 	end
 end
 
 class USRP
-	#container class since there may be more than one datum, but they should all be updated via a single cmd
+	#Stratgey Contrainer, 1G are the most common, so we'll try them first, then move to 10g, and finally USB
 	def initialize()
 		@log=LOG.instance
-		@usrp_data = USRPData.new()
+		@usrp_date = nil	
+		#Test the Heirarchy, throw away the old object if there is no data
+		begin
+			tmp_usrp = USRPData1G.new()
+			tmp_usrp.pop_data
+			@usrp_data = tmp_usrp.data 
+		rescue Exception => e
+			@log.warn("USRP.new: Failed to enumerate 1G \n exception was #{e} \n #{e.backtrace}")
+		end
+
+		begin
+			if @usrp_data.nil?
+				tmp_usrp = USRPData10G.new()
+				tmp_usrp.pop_data
+				@usrp_data = tmp_usrp.data 
+			end
+		rescue Exception => e
+			@log.warn("USRP.new: Failed to enumerate 10G \n exception was #{e} \n #{e.backtrace}")
+		end
+
+		begin
+			if @usrp_data.nil?
+				tmp_usrp = USRPDataUSB.new()
+				tmp_usrp.pop_data
+				@usrp_data = tmp_usrp.data 
+			end
+		rescue Exception => e
+			@log.warn("USRP.new: Failed to enumerate USB \n exception was #{e} \n #{e.backtrace}")
+		end
 	end
 
 	def update(db)
-		if @usrp_data.type.nil?
+		if @usrp_data.nil?
 			@log.warn("No USRP found")
 			return nil 
 		end
+
+		s = String.new
+
 		dev_name = db.add_dev()
-		s0 = db.add_attr(dev_name,"dev_id",@usrp_data.id)
-		s1 = db.add_attr(dev_name,"dev_type",@usrp_data.type)
-		s2 = db.add_attr(dev_name,"serial",@usrp_data.serial)
-		s3 = db.add_attr(dev_name,"uhd_version",@usrp_data.uhd_version)
-		s4 = String.new
-		@usrp_data.daughters.each{|arr| 
+		s += "Dev added #{dev_name}"
+		s += db.add_attr(dev_name,"dev_id",@usrp_data[:id])
+		s += db.add_attr(dev_name,"dev_type",@usrp_data[:type])
+		s += db.add_attr(dev_name,"serial",@usrp_data[:serial])
+		s += db.add_attr(dev_name,"uhd_version",@usrp_data[:uhd_version])
+		s += db.add_attr(dev_name,"mother_board_type",@usrp_data[:mboard])
+		@usrp_data[:daughters].each{|arr| 
 			dev_name = db.add_dev()
-			s4.concat(db.add_attr(dev_name,"dev_type",arr[0]))
-			s4.concat(db.add_attr(dev_name,"dev_id",arr[1]))
+			s += db.add_attr(dev_name,"dev_type",arr[0])
+			s += db.add_attr(dev_name,"dev_id",arr[1])
 		}
-		return ["Dev added #{dev_name}",s0,s1,s2,s3,s4].flatten.join(" ")
+		return s
 	end
 end
 
@@ -718,6 +928,12 @@ if __FILE__ == $0
 			$options[:locifconfig] = file
 		end
 
+		#modprobe location
+		$options[:locmodprobe] = '/sbin/modprobe'
+		opts.on('--ifcon FILE','location of modprobe (default: /sbin/modprobe)') do |file|
+			$options[:locmodprobe] = file
+		end
+
 		#ping location
 		$options[:locping] = '/bin/ping'
 		opts.on('--ping FILE','location of ping (default: /bin/ping)') do |file|
@@ -726,8 +942,20 @@ if __FILE__ == $0
 
 		#uhd location
 		$options[:locuhd] = '/usr/local/bin/uhd_usrp_probe'
-		opts.on('--uhd FILE','location of uhd usrp probe binary (default: /usr/local/bin/uhd_usrp_probe)') do |file|
+		opts.on('--uhd FILE','location of uhd usrp probe binary (default: /usr/bin/uhd_usrp_probe)') do |file|
 			$options[:locuhd] = file
+		end
+
+		#free location
+		$options[:locfree] = '/usr/bin/free'
+		opts.on('--free FILE','location of free binary (default: /usr/bin/free)') do |file|
+			$options[:locfree] = file
+		end
+
+		#sysctl location
+		$options[:locsysctl] = '/sbin/sysctl'
+		opts.on('--sysctl FILE','location of sysctl binary (default: /sbin/sysctl)') do |file|
+			$options[:locsysctl] = file
 		end
 
 		#HOSTNAME location
@@ -762,6 +990,7 @@ if __FILE__ == $0
 		log.set_debug 
 		log.debug("Options specfied are \n#{$options.to_a.join("\n")}")
 	end
+	log.info("Main: Gatherer Version 4.3, Now with more regexp and hash!")
 
 	begin
 		#need to know the node name before you instantiate the DB	
@@ -796,24 +1025,28 @@ if __FILE__ == $0
 		log.info("Main: USRP data update complete")
 
 		#update netfpga
-		netfpga = NetFPGA.new()
-		netfpga.update(db)
-		log.info("Main: NetFPGA data update complete")
+#		netfpga = NetFPGA.new()
+#		netfpga.update(db)
+#		log.info("Main: NetFPGA data update complete")
 
 		#then use that db helper to checkin
 		log.info("Main: Checking in")
 		db.check_in(nd.now)
 
 	rescue Exception => e
+		log.fatal(e)
+		log.fatal(e.backtrace)
+		log.fatal("Main: Critical failure. Dieing")
 		puts e
-		log.fatal("Can't Continue, sending email")
-		msgstr = "
-From: 'root@#{nd.fqdn}'
-To: root@orbit-lab.org
-Subject: Fatal Inventory 
-Error Hi, #{nd.fqdn} encountered a fatal error. Message was \n #{e.class} \n #{e.message}
-"
-		Net::SMTP.start('email.orbit-lab.org', 25) { |smtp| smtp.send_message msgstr, "root@#{nd.fqdn}", "root@orbit-lab.org"}
+		puts e.backtrace
+#		log.fatal("Can't Continue, sending email")
+#		msgstr = "
+#From: 'root@#{nd.fqdn}'
+#To: root@orbit-lab.org
+#Subject: Fatal Inventory 
+#Error Hi, #{nd.fqdn} encountered a fatal error. Message was \n #{e.class} \n #{e.message}
+#"
+#		Net::SMTP.start('email.orbit-lab.org', 25) { |smtp| smtp.send_message msgstr, "root@#{nd.fqdn}", "root@orbit-lab.org"}
 
 	ensure	
 		#Must close connection reguardless of results. 
