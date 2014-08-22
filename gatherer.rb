@@ -74,6 +74,24 @@ class Tools
 		end
 		return stdout
 	end
+
+	def self.run_cmd_combined(cmd)
+		begin
+			#run command with but glue stderr and stdout into one string
+			stdin, stdout, stderr = Open3.popen3(cmd)
+			#convert the outputs to strings
+			error = stderr.readlines.map{|x| x.strip}.join(" ")
+            output = stdout.readlines.map{|x| x.strip}.join(" ")
+			#raise an exception if the binary is not found 
+			raise BinaryNotFound.new("#{cmd} failed",cmd) if error.include?("No such file or directory")
+		rescue BinaryNotFound => e
+			@@log.warn("Tools.run_cmd: #{e.class} #{e.message} \n #{e.cmd}")
+			@@log.warn("Tools.run_cmd: called by #{e.caller}")
+			raise
+		end
+		return output + error
+	end
+
 end
 
 
@@ -501,7 +519,7 @@ class USRPData10G <  USRPData
 		super
 		begin
 			retries = 0
-			@iface.load_module("mlx4_en")
+	#		@iface.load_module("mlx4_en")
 			@iface.set_ip("192.168.40.1","255.255.255.0")
 			@iface.set_mtu("9000")
 			begin
@@ -574,7 +592,7 @@ class BenchData
 end
 
 class DiskData
-	def initialize()
+	def initialize(disk_dev="/dev/sda",block_size="100MB",block_count="25")
 		@log  = LOG.instance
 
 		#dig out the size and sn from lshw
@@ -584,10 +602,18 @@ class DiskData
 		@hd_sn = get_data.call("serial",disk.data)
 
 		#get the model from smartctl
-		@hd_model = Tools.run_cmd("#{$options[:loclsmart]} -a #{$options[:locdiskdev]}").readlines.join.scan(/[Mm]odel.*?:\s*(.*)$/).first
-		@log.debug("Disk model was #{@hd_model}")
+		@hd_model = Tools.run_cmd("#{$options[:loclsmart]} -a #{$options[:locdiskdev]}").readlines.join.scan(/[Mm]odel.*?:\s*(.*)$/).flatten.first
+		@log.debug("DiskData.new: Disk model was #{@hd_model}")
+        @dd_bench = nil
+        begin
+            @log.debug("DiskData.new:Starting the dd test on #{disk_dev}, copying #{block_count} blocks of size #{block_size}")
+            @dd_bench = Tools.run_cmd_combined("#{$options[:locdd]} if=/dev/zero of=#{disk_dev} bs=#{block_size} count=#{block_count}").scan(/s,\s*(.*?\s*MB\/s)/).flatten.first
+            @log.debug("DiskData.new:DD bench mark was #{@dd_bench}")
+        rescue Exception => e
+            @log.warn("DiskData.new: Failed to dd to disk  \n exception was #{e} \n #{e.backtrace}")
+        end
 	end
-	attr_reader :hd_size, :hd_sn, :hd_model
+	attr_reader :hd_size, :hd_sn, :hd_model, :dd_bench
 end
 
 class System 
@@ -621,6 +647,7 @@ class System
 		@hd_size = disk.hd_size
 		@hd_sn = disk.hd_sn
 		@hd_model = disk.hd_model
+		@dd_bench = disk.dd_bench
 
 		#extract the motherboard serial number 
 		mb = LshwData.new("system")
@@ -638,7 +665,7 @@ class System
 
 	def update(db)
 		#db is a DBhelper object that is used to push updated values of the data to the Rest DB
-		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn","cpu_bench","fw_ping","hd_model"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn,@cpu_bench,@fw_ping,@hd_model])
+		data  = ["memory","cpu_hz","cpu_type","hd_size","hd_sn","mb_sn","cpu_bench","fw_ping","hd_model","dd_benchmark"].zip([@memory,@cpu_hz,@cpu_type,@hd_size,@hd_sn,@mb_sn,@cpu_bench,@fw_ping,@hd_model,@dd_bench])
 		return  data.map{|arr| db.add_attr(db.node,arr[0],arr[1])}.join(" ")
 
 	end
@@ -686,8 +713,8 @@ class Network
 			dev_name = db.add_dev()
 			
 			#these have return values but we're discarding them because they are reported in the DB tools anyway.
-			db.add_attr(dev_name,"if_mac",v[:if_mac],)
-		       	db.add_attr(dev_name,"if_name",v[:if_name])
+			db.add_attr(dev_name,"if_mac",v[:if_mac])
+		    db.add_attr(dev_name,"if_name",v[:if_name])
 			db.add_attr(dev_name,"dev_type",k)
 			db.add_attr(dev_name,"dev_id",v[:dev_id]) 
 			
@@ -968,6 +995,12 @@ if __FILE__ == $0
 		$options[:locdate] = '/bin/date'
 		opts.on('--date FILE','location of date executeable (default: /bin/date)') do |file|
 			$options[:locdate] = file
+		end
+
+		#dd location
+		$options[:locdd] = '/bin/dd'
+		opts.on('--dd FILE','location of dd executeable (default: /bin/dd)') do |file|
+			$options[:locdd] = file
 		end
 
 		# This displays the help screen, all programs are
