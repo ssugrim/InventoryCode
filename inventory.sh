@@ -5,7 +5,7 @@ let amt=$RANDOM%10
 echo "Sleep $amt" >> /tmp/inventory.log
 sleep $amt 
 echo "NTP info" >> /tmp/inventory.log
-/usr/sbin/ntpd -d -n -q -p consolec
+/usr/sbin/ntpd -d -n -q -p consolec >> /tmp/inventory.log
 echo "Fixing HW clock" >> /tmp/inventory.log
 /sbin/hwclock --directisa -w
 /sbin/hwclock >> /tmp/inventory.log
