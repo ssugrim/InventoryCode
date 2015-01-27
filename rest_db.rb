@@ -3,9 +3,8 @@
 #A rest client DB interface. Implements add, del, and get for attributes.
 #Adapting to the new "interface" defined at http://www.orbit-lab.org/wiki/Software/bAM/aInventory 
 
+require 'log_wrap'
 require 'rest_client'
-
-require_relative 'log_wrap'
 
 class DelAttrError < StandardError
 end
